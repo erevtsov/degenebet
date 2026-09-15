@@ -18,7 +18,7 @@ from degenebet.config import cache_dir
 # update_config mutates a process-global config, read once here at import
 # time — a later DEGENEBET_CACHE_DIR change within the same process won't
 # re-apply. Acceptable for a short-lived CLI invocation.
-nflreadpy.config.update_config(cache_mode="filesystem", cache_dir=str(cache_dir() / "nflverse"))
+nflreadpy.config.update_config(cache_mode="filesystem", cache_dir=cache_dir() / "nflverse")
 
 
 def _seasons_arg(seasons: list[int] | None) -> list[int] | bool:
