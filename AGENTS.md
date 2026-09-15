@@ -44,6 +44,7 @@
   hardcode it
 
 ## Testing Rules
+- Golden regression fixtures and `hypothesis` property tests are required for the modeling sub-project — see "Automation & Verification" below for what that means concretely
 - Test-first for anything beyond a trivial change
 - Never mock what can be faked with real in-memory data — network calls
   are mocked (`nflreadpy`, `httpx`), but parsing/transform logic and the
