@@ -51,22 +51,17 @@ class SharpAPIProvider:
 
                 response = client.get(_BASE_URL, params=params)
                 if response.status_code == 401:
-                    raise RuntimeError(
-                        "SharpAPI rejected the API key (401). Check SHARPAPI_KEY."
-                    )
+                    raise RuntimeError("SharpAPI rejected the API key (401). Check SHARPAPI_KEY.")
                 if response.status_code == 429:
                     raise RuntimeError(
-                        "SharpAPI rate limit exceeded (429). "
-                        "Free tier allows 12 requests/minute."
+                        "SharpAPI rate limit exceeded (429). Free tier allows 12 requests/minute."
                     )
                 response.raise_for_status()
 
                 payload = response.json()
                 for key in ("data", "pagination"):
                     if key not in payload:
-                        raise RuntimeError(
-                            f"Unexpected SharpAPI response shape: missing {key!r}"
-                        )
+                        raise RuntimeError(f"Unexpected SharpAPI response shape: missing {key!r}")
                 rows.extend(row for row in payload["data"] if row["is_main_line"])
 
                 pagination = payload["pagination"]
