@@ -57,6 +57,8 @@
 - Before making changes across more than 3 files, present a plan and wait
 - When uncertain between two approaches, present both with tradeoffs
 - Never install new dependencies without asking first
+- Never merge a pull request — always create the PR and stop; merging
+  `master` always requires human review, no exceptions
 - Never modify this file during a task unless explicitly asked
 
 ## Never Do
