@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import polars as pl
 import pytest
 import respx
 
@@ -108,3 +109,58 @@ def test_fetch_raw_raises_on_rate_limit() -> None:
 
     with pytest.raises(RuntimeError, match="429"):
         SharpAPIProvider().fetch_raw()
+
+
+@respx.mock
+def test_fetch_raw_handles_moneylines_before_spread_line() -> None:
+    moneylines = [_row(event_id=str(i), id=f"ml_{i}") for i in range(100)]
+    spread = _row(
+        event_id="spread-1",
+        id="spread_1",
+        market_type="spread",
+        selection_type="home",
+        line=-3.5,
+    )
+    rows = [*moneylines, spread]
+    respx.get(_URL).mock(return_value=httpx.Response(200, json=_payload(rows)))
+
+    frame = SharpAPIProvider().fetch_raw()
+
+    assert frame.height == 101
+    spread_row = frame.filter(pl.col("event_id") == "spread-1")
+    assert spread_row["line"][0] == -3.5
+
+
+@respx.mock
+def test_fetch_raw_handles_empty_response() -> None:
+    respx.get(_URL).mock(return_value=httpx.Response(200, json=_payload([])))
+
+    frame = SharpAPIProvider().fetch_raw()
+
+    assert frame.height == 0
+    assert "pulled_at" in frame.columns
+
+
+@respx.mock
+def test_fetch_raw_stops_on_has_more_with_null_cursor() -> None:
+    route = respx.get(_URL)
+    route.mock(
+        return_value=httpx.Response(
+            200, json=_payload([_row()], has_more=True, next_cursor=None)
+        )
+    )
+
+    frame = SharpAPIProvider().fetch_raw()
+
+    assert frame.height == 1
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_fetch_raw_raises_on_missing_pagination_key() -> None:
+    payload = {"data": [_row()]}
+    respx.get(_URL).mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="pagination"):
+        SharpAPIProvider().fetch_raw()
+

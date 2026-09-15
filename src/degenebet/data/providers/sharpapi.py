@@ -11,20 +11,20 @@ from degenebet.config import sharpapi_key
 
 _BASE_URL = "https://api.sharpapi.io/api/v1/odds"
 _MARKETS = "moneyline,spread,total"
-_COLUMNS = [
-    "event_id",
-    "home_team",
-    "away_team",
-    "market_type",
-    "selection",
-    "selection_type",
-    "odds_american",
-    "odds_decimal",
-    "odds_probability",
-    "line",
-    "event_start_time",
-    "sportsbook",
-]
+_SCHEMA: dict[str, type[pl.DataType]] = {
+    "event_id": pl.Utf8,
+    "home_team": pl.Utf8,
+    "away_team": pl.Utf8,
+    "market_type": pl.Utf8,
+    "selection": pl.Utf8,
+    "selection_type": pl.Utf8,
+    "odds_american": pl.Int64,
+    "odds_decimal": pl.Float64,
+    "odds_probability": pl.Float64,
+    "line": pl.Float64,
+    "event_start_time": pl.Utf8,
+    "sportsbook": pl.Utf8,
+}
 
 
 class SharpAPIProvider:
@@ -62,16 +62,17 @@ class SharpAPIProvider:
                 response.raise_for_status()
 
                 payload = response.json()
+                for key in ("data", "pagination"):
+                    if key not in payload:
+                        raise RuntimeError(
+                            f"Unexpected SharpAPI response shape: missing {key!r}"
+                        )
                 rows.extend(row for row in payload["data"] if row["is_main_line"])
 
                 pagination = payload["pagination"]
-                if not pagination["has_more"]:
+                if not pagination["has_more"] or not pagination["next_cursor"]:
                     break
                 cursor = pagination["next_cursor"]
 
-        if rows:
-            frame = pl.DataFrame(rows).select(_COLUMNS)
-        else:
-            frame = pl.DataFrame(schema={c: pl.Utf8 for c in _COLUMNS})
-
+        frame = pl.DataFrame(rows, schema=_SCHEMA)
         return frame.with_columns(pl.lit(pulled_at).alias("pulled_at"))
