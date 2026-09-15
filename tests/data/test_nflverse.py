@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import nflreadpy.config
 import polars as pl
 import pytest
 
 from degenebet.data import nflverse
+
+
+def test_nflverse_configures_filesystem_cache() -> None:
+    config = nflreadpy.config.get_config()
+    assert config.cache_mode == nflreadpy.config.CacheMode.FILESYSTEM
+    assert str(config.cache_dir).endswith("nflverse")
 
 _WRAPPERS: list[tuple[Callable[..., pl.DataFrame], str]] = [
     (nflverse.load_schedules, "load_schedules"),
