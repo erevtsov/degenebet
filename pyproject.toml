@@ -17,6 +17,9 @@ dependencies = [
     "typer>=0.12",
 ]
 
+[project.scripts]
+degenebet = "degenebet.cli:app"
+
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
