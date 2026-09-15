@@ -140,22 +140,22 @@ exactly:
 
 ## Sequencing
 
-This lands as its own PR against `master`, before the open `data-foundation`
-PR merges — so branch protection and the CI gate are already active by the
-time the first real code PR lands, and that PR gets to prove the gate works
-end-to-end (per user decision, 2026-09-15). Concretely: a new branch/worktree
-off `master` carries the `justfile`, `.github/workflows/ci.yml`,
-`AGENTS.md`/`CLAUDE.md` rename, and the one-time `ruff format` normalization
-pass; branch protection itself is a repo-settings change (via `gh api`),
-applied once CI has run green at least once on this new branch's PR (a
-required status check can't be required before it exists).
+Corrected 2026-09-15: `master` currently has no Python project on it at all
+(no `pyproject.toml`, `src/`, or `tests/` — those exist only on the not-yet-
+merged `data-foundation` branch). A CI workflow with nothing to check can
+never go green, so branch protection could never be turned on if this
+landed first. Order is therefore:
 
-One wrinkle this ordering creates: the already-open `data-foundation` branch
-has its own `CLAUDE.md` (a plain file, from that branch's Task 1). Once this
-spec's PR merges `AGENTS.md` + a `CLAUDE.md` *symlink* to `master`,
-`data-foundation` will need a rebase (or merge of `master` into it) that
-resolves `CLAUDE.md` from "plain file with data-foundation's content" to
-"symlink, with that same content now folded into `AGENTS.md`" — a content
-merge, not just a conflict marker cleanup. Whoever implements the
-data-foundation branch's final merge should do this explicitly rather than
-letting a generic conflict-resolution pass silently pick one side.
+1. Merge the already-reviewed `data-foundation` PR to `master` first — this
+   puts a real `pyproject.toml`, `src/`, `tests/`, and `CLAUDE.md` on
+   `master` for CI to actually check.
+2. Then open this spec's guardrails as their own PR on top: a new
+   branch/worktree off `master` carries the `justfile`,
+   `.github/workflows/ci.yml`, the `CLAUDE.md` → `AGENTS.md` rename (plain
+   rename now — `CLAUDE.md` already exists on `master` post-step-1, so this
+   is a `git mv` plus adding the symlink back and the new "Automation &
+   Verification" section content, not a merge/rebase reconciliation), and
+   the one-time `ruff format` normalization pass.
+3. Branch protection is a repo-settings change (via `gh api`), applied once
+   this second PR's CI has run green at least once (a required status check
+   can't be required before it exists).
