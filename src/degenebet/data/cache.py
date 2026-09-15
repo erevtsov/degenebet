@@ -67,12 +67,17 @@ def load_or_fetch(
 
     if latest_path is not None:
         cached = pl.read_parquet(latest_path)
-        pulled_at: datetime = cached["pulled_at"].max()  # type: ignore[assignment]
-        if datetime.now(UTC) - pulled_at <= max_age:
+        cached_pulled_at: datetime | None = cached["pulled_at"].max()  # type: ignore[assignment]
+        # A 0-height snapshot (e.g. a bye-week empty odds response) has no
+        # rows to take a max() over, so treat it as maximally stale rather
+        # than crashing on a None comparison.
+        if cached_pulled_at is not None and datetime.now(UTC) - cached_pulled_at <= max_age:
             return cached
 
     fresh = provider.fetch_raw()
-    pulled_at = fresh["pulled_at"].max()  # type: ignore[assignment]
+    pulled_at: datetime | None = fresh["pulled_at"].max()  # type: ignore[assignment]
+    if pulled_at is None:
+        pulled_at = datetime.now(UTC)
     path = _snapshot_path(source, pulled_at)
     path.parent.mkdir(parents=True, exist_ok=True)
     fresh.write_parquet(path)

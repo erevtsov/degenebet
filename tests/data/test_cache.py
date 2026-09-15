@@ -23,6 +23,10 @@ def _frame(pulled_at: datetime) -> pl.DataFrame:
     return pl.DataFrame({"value": [1, 2], "pulled_at": [pulled_at, pulled_at]})
 
 
+def _empty_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema={"value": pl.Int64, "pulled_at": pl.Datetime(time_zone="UTC")})
+
+
 @pytest.fixture(autouse=True)
 def _cache_dir(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEGENEBET_CACHE_DIR", str(tmp_path))
@@ -63,3 +67,19 @@ def test_load_or_fetch_writes_a_parquet_snapshot(tmp_path: object) -> None:
     cache.load_or_fetch(provider, "testsource")
     snapshots = list((Path(str(tmp_path)) / "testsource").glob("testsource_*.parquet"))
     assert len(snapshots) == 1
+
+
+def test_load_or_fetch_handles_empty_provider_response() -> None:
+    provider = FakeProvider(_empty_frame())
+    result = cache.load_or_fetch(provider, "testsource")
+    assert provider.calls == 1
+    assert result.height == 0
+    assert "pulled_at" in result.columns
+
+
+def test_load_or_fetch_refetches_after_empty_cached_snapshot() -> None:
+    provider = FakeProvider(_empty_frame())
+    cache.load_or_fetch(provider, "testsource")
+    provider.frame = _frame(datetime.now(UTC))
+    cache.load_or_fetch(provider, "testsource")
+    assert provider.calls == 2
