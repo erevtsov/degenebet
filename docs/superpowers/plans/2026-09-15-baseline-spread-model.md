@@ -4,7 +4,7 @@
 
 **Goal:** A linear-regression point-spread model plus a backtest harness that evaluates it against real historical closing lines, with the golden-fixture/property-test coverage `AGENTS.md` mandates for any modeling work.
 
-**Architecture:** A `modeling/` subpackage with three layers — `features.py` (no-lookahead rolling team efficiency features), `spread_model.py` (a `SpreadModel` wrapping scikit-learn's `LinearRegression` plus a derived cover probability), `backtest.py` (single train/test season split, flat-unit -110 scoring). Golden fixtures and `hypothesis` property tests land alongside, not after.
+**Architecture:** A `modeling/` subpackage with three layers — `features.py` (no-lookahead rolling team efficiency features), `spread_model.py` (a `SpreadModel` composed with an injected regressor — `LinearRegression` by default, swappable for any sklearn-compatible estimator satisfying a small `RegressorProtocol` — plus a derived cover probability), `backtest.py` (single train/test season split, flat-unit -110 scoring). Golden fixtures and `hypothesis` property tests land alongside, not after.
 
 **Tech Stack:** Python 3.12+, existing `uv`/polars/ruff/mypy/pytest toolchain, plus new dependencies `scikit-learn`, `scipy` (core — used directly for `norm.cdf`, not just transitively via sklearn) and `hypothesis` (test extra).
 
@@ -20,6 +20,7 @@
   - Rolling features use `.shift(1)` before `.rolling_mean(window_size=..., min_samples=...)` (note: this installed polars version's parameter is `min_samples`, not `min_periods`) `.over("team")` — this excludes the current game from its own rolling average. Rows below `min_history` are dropped, never padded.
 - -110 pricing: a win nets `+1.0` unit, a loss nets `-1.1` units (risking 1.1 to win 1.0), a push nets `0`. `roi_pct = units_won / (bets_placed * 1.1) * 100`.
 - Neither `scikit-learn` nor `scipy` ships a `py.typed` marker (verified) — both need `ignore_missing_imports = true` mypy overrides, same pattern as the existing `nflreadpy` override.
+- `SpreadModel` is composed with an injected `RegressorProtocol` (structural: `.fit(X, y)`, `.predict(X)`), defaulting to `LinearRegression()` when none is given — mirroring the existing `Provider`/`waypoint`-style pluggable-strategy `Protocol` convention already used elsewhere in this codebase, rather than hardcoding the estimator. This is a deliberate revision from the spec's original wording ("uses scikit-learn's LinearRegression internally") made during plan review, in direct service of the spec's own stated future intent to swap in other model classes without refactoring `SpreadModel`.
 - No real network calls in tests — `team_stats`/`schedules` test fixtures are small hand-built in-memory `pl.DataFrame`s with realistic column names/dtypes, not real fetched data.
 - **PR-only workflow:** every task commits locally to this plan's branch as usual. Only at the very end, when opening the branch's PR (per `superpowers:finishing-a-development-branch`), the agent creates the PR and stops — it never runs `gh pr merge`. A human merges. This applies to any other PR-worthy action encountered mid-plan too.
 - Conventional commits; `just check` clean (ruff check, ruff format check, mypy, pytest) before any task is done.
@@ -344,7 +345,7 @@ git commit -m "feat: add no-lookahead rolling team efficiency features"
 
 **Interfaces:**
 - Consumes: `build_model_table`'s output shape (Task 1) — 6 feature columns (`home_offense_epa`, `home_defense_epa_allowed`, `home_turnover_margin`, `away_offense_epa`, `away_defense_epa_allowed`, `away_turnover_margin`) plus `result`, `spread_line`.
-- Produces: `SpreadModel` class with `.fit(model_table)`, `.predict(model_table) -> pl.DataFrame` (adds `predicted_result`), `.cover_probability(model_table) -> pl.DataFrame` (adds `home_cover_probability`) — used by Task 3 (backtest) and Task 4 (golden fixture, property tests).
+- Produces: `RegressorProtocol` (structural type: `.fit(X, y)`, `.predict(X)`) and `SpreadModel` class — composed with an injected `RegressorProtocol` instance (`model: RegressorProtocol | None = None`, defaulting to `LinearRegression()` when omitted) rather than hardcoding `LinearRegression` internally, so a future sub-project can swap in a different sklearn-compatible estimator without changing `SpreadModel` itself. Exposes `.model` (public attribute, the injected/default regressor), `.fit(model_table)`, `.predict(model_table) -> pl.DataFrame` (adds `predicted_result`), `.cover_probability(model_table) -> pl.DataFrame` (adds `home_cover_probability`) — used by Task 3 (backtest) and Task 4 (golden fixture, property tests).
 
 - [ ] **Step 1: Add dependencies to `pyproject.toml`**
 
@@ -373,6 +374,8 @@ Expected: installs `scikit-learn` and `scipy` successfully.
 ```python
 from __future__ import annotations
 
+import numpy as np
+import numpy.typing as npt
 import polars as pl
 import pytest
 
@@ -453,6 +456,42 @@ def test_cover_probability_calls_predict_internally_if_missing() -> None:
 
     assert "predicted_result" in result.columns
     assert "home_cover_probability" in result.columns
+
+
+class _ConstantRegressor:
+    """Trivial regressor always predicting a fixed constant — a test double
+    proving SpreadModel actually delegates to an injected regressor rather
+    than hardcoding LinearRegression. Matches RegressorProtocol's shape
+    exactly (ndarray in, ndarray out) so it type-checks where a
+    RegressorProtocol is expected."""
+
+    def __init__(self, constant: float) -> None:
+        self._constant = constant
+
+    def fit(self, X: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> "_ConstantRegressor":
+        return self
+
+    def predict(self, X: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        return np.full(X.shape[0], self._constant)
+
+
+def test_spread_model_accepts_injected_regressor() -> None:
+    model = SpreadModel(model=_ConstantRegressor(constant=3.5))
+    table = _noiseless_table()
+    model.fit(table)
+
+    predicted = model.predict(table)
+
+    for value in predicted["predicted_result"].to_list():
+        assert value == pytest.approx(3.5)
+
+
+def test_spread_model_defaults_to_linear_regression() -> None:
+    from sklearn.linear_model import LinearRegression
+
+    model = SpreadModel()
+
+    assert isinstance(model.model, LinearRegression)
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -463,11 +502,17 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'degenebet.modeling.spr
 - [ ] **Step 4: Implement `src/degenebet/modeling/spread_model.py`**
 
 ```python
-"""Linear regression predicting NFL game margin from rolling team features."""
+"""Linear regression (by default) predicting NFL game margin from rolling
+team features. SpreadModel is composed with a RegressorProtocol rather than
+hardcoding LinearRegression, so a future sub-project can swap in a
+different sklearn-compatible estimator without changing this class."""
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 from scipy.stats import norm
 from sklearn.linear_model import LinearRegression
@@ -482,26 +527,34 @@ _FEATURE_COLUMNS = [
 ]
 
 
-class SpreadModel:
-    """Linear regression predicting `result` from 6 rolling team features,
-    plus a cover probability derived from the training residual spread."""
+class RegressorProtocol(Protocol):
+    """Minimal sklearn-compatible regressor interface SpreadModel depends on."""
 
-    def __init__(self) -> None:
-        self._model = LinearRegression()
+    def fit(self, X: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> object: ...
+    def predict(self, X: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+
+
+class SpreadModel:
+    """Predicts `result` from 6 rolling team features via an injected
+    regressor (LinearRegression by default), plus a cover probability
+    derived from the training residual spread."""
+
+    def __init__(self, model: RegressorProtocol | None = None) -> None:
+        self.model: RegressorProtocol = model if model is not None else LinearRegression()
         self._residual_std: float | None = None
 
     def fit(self, model_table: pl.DataFrame) -> None:
-        """Fits on the 6 feature columns against `result`."""
+        """Fits the injected regressor on the 6 feature columns against `result`."""
         features = model_table.select(_FEATURE_COLUMNS).to_numpy()
         target = model_table["result"].to_numpy()
-        self._model.fit(features, target)
-        residuals = target - self._model.predict(features)
+        self.model.fit(features, target)
+        residuals = target - self.model.predict(features)
         self._residual_std = float(np.std(residuals, ddof=1))
 
     def predict(self, model_table: pl.DataFrame) -> pl.DataFrame:
         """Returns model_table with a new `predicted_result` column."""
         features = model_table.select(_FEATURE_COLUMNS).to_numpy()
-        predicted = self._model.predict(features)
+        predicted = self.model.predict(features)
         return model_table.with_columns(pl.Series("predicted_result", predicted))
 
     def cover_probability(self, model_table: pl.DataFrame) -> pl.DataFrame:
@@ -519,7 +572,7 @@ class SpreadModel:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/modeling/test_spread_model.py -v`
-Expected: PASS (4 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 6: Lint and type-check**
 
@@ -530,7 +583,7 @@ Expected: all clean
 
 ```bash
 git add pyproject.toml uv.lock src/degenebet/modeling/spread_model.py tests/modeling/test_spread_model.py
-git commit -m "feat: add SpreadModel (linear regression + cover probability)"
+git commit -m "feat: add SpreadModel (composable regressor + cover probability)"
 ```
 
 ---
@@ -824,8 +877,8 @@ from tests.modeling._golden_spread_fixture import golden_model_table
 table = golden_model_table()
 model = SpreadModel()
 model.fit(table)
-print('coef_:', model._model.coef_.tolist())
-print('intercept_:', float(model._model.intercept_))
+print('coef_:', model.model.coef_.tolist())
+print('intercept_:', float(model.model.intercept_))
 print('residual_std:', model._residual_std)
 
 predicted = model.predict(table.head(5))
@@ -869,9 +922,9 @@ def test_spread_model_golden_fit_and_predict() -> None:
     model = SpreadModel()
     model.fit(table)
 
-    for actual, expected in zip(model._model.coef_.tolist(), _EXPECTED_COEF):
+    for actual, expected in zip(model.model.coef_.tolist(), _EXPECTED_COEF):
         assert actual == pytest.approx(expected, abs=1e-6)
-    assert float(model._model.intercept_) == pytest.approx(_EXPECTED_INTERCEPT, abs=1e-6)
+    assert float(model.model.intercept_) == pytest.approx(_EXPECTED_INTERCEPT, abs=1e-6)
     assert model._residual_std == pytest.approx(_EXPECTED_RESIDUAL_STD, abs=1e-6)
 
     predicted = model.predict(table.head(5))
@@ -978,5 +1031,5 @@ git commit -m "test: add golden regression fixture and property-based invariant 
 
 - **Spec coverage:** feature pipeline with verified no-lookahead/EPA/defense-derivation logic (Task 1) ✅, `SpreadModel` with cover probability (Task 2) ✅, backtest harness with -110 scoring (Task 3) ✅, golden fixture + property tests fulfilling `AGENTS.md`'s mandate (Task 4) ✅. Every spec section maps to a task.
 - **Placeholder scan:** no TBD/TODO. The `<PASTE: ...>` markers in Task 4 Step 4 are a deliberate, called-out exception — golden/snapshot test values cannot be known before the code exists to generate them; Step 3 gives the exact command to generate them and Step 4 explains precisely what to do with the output. This is not a placeholder in the sense the "No Placeholders" rule prohibits (vague instructions); it's the standard shape of authoring any golden test.
-- **Type consistency:** `_FEATURE_COLUMNS` (6 names, exact order) is identical across `spread_model.py`, `backtest.py`'s test fixtures, `_golden_spread_fixture.py`, and `test_property_invariants.py`. `SpreadModel.fit/predict/cover_probability` signatures match between Task 2's implementation and Tasks 3/4's callers. `BacktestResult`'s fields (`bets`, `bets_placed`, `ats_win_rate`, `units_won`, `roi_pct`) are consistent between Task 3's dataclass and its tests.
+- **Type consistency:** `_FEATURE_COLUMNS` (6 names, exact order) is identical across `spread_model.py`, `backtest.py`'s test fixtures, `_golden_spread_fixture.py`, and `test_property_invariants.py`. `SpreadModel.fit/predict/cover_probability` signatures match between Task 2's implementation and Tasks 3/4's callers. `BacktestResult`'s fields (`bets`, `bets_placed`, `ats_win_rate`, `units_won`, `roi_pct`) are consistent between Task 3's dataclass and its tests. `SpreadModel`'s injected regressor is consistently accessed as the public `.model` attribute (not the private `._model` from an earlier draft of this plan) everywhere it's touched outside the class itself — Task 4's golden-fixture generation script and golden test both use `model.model.coef_`/`model.model.intercept_`.
 - **Verified-not-assumed:** every data-shape claim in Global Constraints (EPA formula, defense-EPA derivation, sign convention, the `min_samples` polars parameter name, the exact rolling/self-join logic, the vectorized backtest scoring expressions) was prototyped and run against either real data or hand-computed expected values during design — not written from memory of how these APIs "should" work.
