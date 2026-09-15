@@ -29,8 +29,13 @@ before it can merge. No direct pushes to `master`, even from the repo owner.
 - **Golden regression fixtures / property-based tests.** waypoint pins
   numeric output for its analytics surfaces because it has core numeric
   logic worth protecting from silent drift. degenebet doesn't yet — the
-  data-foundation sub-project is I/O and parsing, not modeling math. Revisit
-  once the modeling sub-project exists.
+  data-foundation sub-project is I/O and parsing, not modeling math. This is
+  not a "someday" deferral: it is a **required part of the modeling
+  sub-project's own spec**, not an optional add-on discovered after the
+  fact. See section 2 below — the guidance goes into `AGENTS.md` now, so the
+  agent brainstorming that sub-project's spec sees it before scoping the
+  work, the same way this project's own CLAUDE.md/AGENTS.md rules get read
+  before any brainstorming session starts.
 - **Weekly scheduled maintenance agent.** Confirmed by explicit user
   decision (2026-09-15): not being set up in this pass. Worth noting the
   scheduled agent's job would look different for degenebet than for
@@ -97,10 +102,24 @@ Rename `CLAUDE.md` to `AGENTS.md` (content unchanged otherwise), and add
 under either name. Add one new section, mirroring waypoint's:
 
 - **Automation & Verification** — documents `just check` as the sole
-  authoritative gate, states CI runs the identical command, and notes there
-  are no golden fixtures or scheduled automation yet (so a future addition
-  of either updates this section, rather than the omission looking like an
-  oversight).
+  authoritative gate, states CI runs the identical command, and states two
+  things explicitly rather than leaving them as silent gaps:
+  - No scheduled automation yet (see the deferred non-goal above).
+  - **No golden regression fixtures or property-based tests yet — and the
+    modeling sub-project must add them before or alongside its first
+    predictive model, not after.** Concretely: pin numeric output for each
+    model/analytic surface against a deterministic fixture (mirroring
+    waypoint's `tests/analysis/_golden_portfolio.py` +
+    `test_*_golden.py` pattern — one fixture family per surface, tight
+    numeric tolerance not exact equality, updates are a deliberate reviewed
+    act never a reflexive fix for a failing test), and add `hypothesis`
+    property tests for the invariants that would be expensive to get
+    silently wrong (e.g., predicted probabilities lie in `[0, 1]` and sum
+    to 1 across a market's outcomes; backtest P&L reconciles under
+    re-aggregation over a date range). This line is the enforcement
+    mechanism for the "non-goal, not decided against" framing above: an
+    agent brainstorming the modeling sub-project's spec reads this file
+    first and scopes the work to include it.
 
 Not adding a "Scheduled Task Scope" section — nothing scheduled exists yet
 to scope. Add it when the scheduled-maintenance non-goal above gets
@@ -130,3 +149,13 @@ off `master` carries the `justfile`, `.github/workflows/ci.yml`,
 pass; branch protection itself is a repo-settings change (via `gh api`),
 applied once CI has run green at least once on this new branch's PR (a
 required status check can't be required before it exists).
+
+One wrinkle this ordering creates: the already-open `data-foundation` branch
+has its own `CLAUDE.md` (a plain file, from that branch's Task 1). Once this
+spec's PR merges `AGENTS.md` + a `CLAUDE.md` *symlink* to `master`,
+`data-foundation` will need a rebase (or merge of `master` into it) that
+resolves `CLAUDE.md` from "plain file with data-foundation's content" to
+"symlink, with that same content now folded into `AGENTS.md`" — a content
+merge, not just a conflict marker cleanup. Whoever implements the
+data-foundation branch's final merge should do this explicitly rather than
+letting a generic conflict-resolution pass silently pick one side.
