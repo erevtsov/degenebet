@@ -8,13 +8,17 @@ from degenebet import data
 
 app = typer.Typer(no_args_is_help=True)
 fetch_app = typer.Typer(no_args_is_help=True)
-app.add_typer(fetch_app, name="fetch")
+app.add_typer(fetch_app, name="fetch", help="Fetch and cache NFL data")
 
 
 def _parse_seasons(seasons: str | None) -> list[int] | None:
     if seasons is None:
         return None
-    return [int(s) for s in seasons.split(",")]
+    try:
+        return [int(s) for s in seasons.split(",")]
+    except ValueError as exc:
+        msg = f"Seasons must be comma-separated years, got: {seasons!r}"
+        raise typer.BadParameter(msg) from exc
 
 
 _SEASONS_OPTION = typer.Option(None, help="Comma-separated seasons, e.g. 2022,2023")

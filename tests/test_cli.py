@@ -30,8 +30,9 @@ def test_fetch_schedules_parses_seasons_option(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("degenebet.cli.data.load_schedules", fake)
 
-    runner.invoke(app, ["fetch", "schedules", "--seasons", "2021,2022"])
+    result = runner.invoke(app, ["fetch", "schedules", "--seasons", "2021,2022"])
 
+    assert result.exit_code == 0
     assert captured["seasons"] == [2021, 2022]
 
 
@@ -89,6 +90,21 @@ def test_fetch_odds_force_refresh_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("degenebet.cli.data.load_odds", fake)
 
-    runner.invoke(app, ["fetch", "odds", "--force-refresh"])
+    result = runner.invoke(app, ["fetch", "odds", "--force-refresh"])
 
+    assert result.exit_code == 0
     assert captured["force_refresh"] is True
+
+
+def test_fetch_schedules_rejects_malformed_seasons() -> None:
+    result = runner.invoke(app, ["fetch", "schedules", "--seasons", "2021-2023"])
+
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_fetch_schedules_rejects_non_numeric_seasons() -> None:
+    result = runner.invoke(app, ["fetch", "schedules", "--seasons", "abc"])
+
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
