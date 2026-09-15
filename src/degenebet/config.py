@@ -28,7 +28,5 @@ def sharpapi_key() -> str:
     """
     key = os.environ.get("SHARPAPI_KEY")
     if not key:
-        raise RuntimeError(
-            "SHARPAPI_KEY is not set. Add it to .env or export it in your shell."
-        )
+        raise RuntimeError("SHARPAPI_KEY is not set. Add it to .env or export it in your shell.")
     return key

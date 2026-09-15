@@ -145,9 +145,7 @@ def test_fetch_raw_handles_empty_response() -> None:
 def test_fetch_raw_stops_on_has_more_with_null_cursor() -> None:
     route = respx.get(_URL)
     route.mock(
-        return_value=httpx.Response(
-            200, json=_payload([_row()], has_more=True, next_cursor=None)
-        )
+        return_value=httpx.Response(200, json=_payload([_row()], has_more=True, next_cursor=None))
     )
 
     frame = SharpAPIProvider().fetch_raw()
@@ -163,4 +161,3 @@ def test_fetch_raw_raises_on_missing_pagination_key() -> None:
 
     with pytest.raises(RuntimeError, match="pagination"):
         SharpAPIProvider().fetch_raw()
-

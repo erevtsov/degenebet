@@ -14,6 +14,7 @@ def test_nflverse_configures_filesystem_cache() -> None:
     assert config.cache_mode == nflreadpy.config.CacheMode.FILESYSTEM
     assert str(config.cache_dir).endswith("nflverse")
 
+
 _WRAPPERS: list[tuple[Callable[..., pl.DataFrame], str]] = [
     (nflverse.load_schedules, "load_schedules"),
     (nflverse.load_player_stats, "load_player_stats"),
