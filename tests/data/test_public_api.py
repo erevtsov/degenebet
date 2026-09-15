@@ -46,5 +46,6 @@ def test_load_odds_delegates_to_cache_with_sharpapi_source(
     result = data.load_odds(force_refresh=True)
 
     assert captured["source"] == "sharpapi"
+    assert captured["max_age"] == timedelta(minutes=15)
     assert captured["force_refresh"] is True
     assert result.height == 1

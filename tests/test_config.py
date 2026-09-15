@@ -26,3 +26,14 @@ def test_sharpapi_key_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("SHARPAPI_KEY", raising=False)
     with pytest.raises(RuntimeError, match="SHARPAPI_KEY"):
         config.sharpapi_key()
+
+
+def test_cache_dir_treats_empty_env_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEGENEBET_CACHE_DIR", "")
+    assert config.cache_dir() == Path.home() / ".degenebet" / "cache"
+
+
+def test_sharpapi_key_treats_empty_env_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHARPAPI_KEY", "")
+    with pytest.raises(RuntimeError, match="SHARPAPI_KEY"):
+        config.sharpapi_key()
