@@ -48,11 +48,18 @@ future specs.
   1999), `load_player_stats()`, `load_team_stats()`, `load_rosters()`. No
   API key required.
 - **SharpAPI** — current NFL odds across 30+ sportsbooks. Free tier: 12
-  req/min, odds from 2 sportsbooks, no credit card. API-key auth via
-  `GET /api/v1/odds?league=NFL`. The user already holds a free-tier key.
-  Returns moneylines, spreads, totals (plus player props and alt lines,
-  unused here) with sportsbook name and both American/decimal odds
-  formats.
+  req/min, odds from 2 sportsbooks (DraftKings, FanDuel), no credit card.
+  Auth via `X-API-Key` header. The user already holds a free-tier key.
+  Endpoint: `GET /api/v1/odds?league=nfl&market=moneyline,spread,total`.
+  Response is `{"data": [...], "pagination": {...}, "updated_at": ...}`;
+  each `data` row is one (sportsbook, event, market, selection) with
+  `event_id`, `home_team`, `away_team`, `market_type`, `selection`,
+  `selection_type` (`home`/`away`/`over`/`under`), `odds_american`,
+  `odds_decimal`, `odds_probability`, `line` (null for moneyline, the
+  spread/total number otherwise), `event_start_time`, `timestamp`.
+  Paginated via `pagination.has_more` / `pagination.next_cursor` — one
+  week of NFL moneyline+spread+total rows can exceed the 200-row page
+  max, so the provider must follow pagination to completion.
 
 ## Architecture
 
@@ -108,15 +115,20 @@ the single place that would change if the source library changes again.
 
 ```python
 class SharpAPIProvider:
-    def fetch_raw(self, league: str = "NFL") -> pl.DataFrame: ...
+    def fetch_raw(self, league: str = "nfl") -> pl.DataFrame: ...
 ```
 
-Calls `GET /api/v1/odds?league=NFL` with the API key from
-`config.sharpapi_key`, via `httpx`. Parses the response into a flat Polars
-DataFrame — one row per (game, sportsbook, market), columns covering
-teams, market type, line/price, sportsbook, odds format, and a `pulled_at`
-timestamp. Raises a clear error on HTTP 401 (bad/missing key) or 429 (rate
-limited) rather than swallowing failures.
+Calls `GET /api/v1/odds?league=nfl&market=moneyline,spread,total` with the
+`X-API-Key` header set from `config.sharpapi_key`, via `httpx`. Follows
+`pagination.next_cursor` until `pagination.has_more` is false, concatenating
+all pages. Flattens the `data` rows into a Polars DataFrame with one row per
+(event, sportsbook, market, selection) — `event_id`, `home_team`,
+`away_team`, `market_type`, `selection`, `selection_type`, `odds_american`,
+`odds_decimal`, `odds_probability`, `line`, `event_start_time`,
+`sportsbook`, plus a `pulled_at` timestamp added at parse time (distinct
+from the API's own `timestamp` field, which reflects when SharpAPI last
+updated that price). Raises a clear error on HTTP 401 (bad/missing key) or
+429 (rate limited) rather than swallowing failures.
 
 ### `data/cache.py`
 
