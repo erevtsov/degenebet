@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import nflreadpy.config
 import polars as pl
@@ -12,7 +13,11 @@ from degenebet.data import nflverse
 def test_nflverse_configures_filesystem_cache() -> None:
     config = nflreadpy.config.get_config()
     assert config.cache_mode == nflreadpy.config.CacheMode.FILESYSTEM
-    assert str(config.cache_dir).endswith("nflverse")
+    # update_config() bypasses pydantic coercion, so a str here would silently
+    # stick as a str — nflreadpy's own cache code then crashes calling .mkdir()
+    # on it. Must be a real Path, not just something that looks like one.
+    assert isinstance(config.cache_dir, Path)
+    assert config.cache_dir.name == "nflverse"
 
 
 _WRAPPERS: list[tuple[Callable[..., pl.DataFrame], str]] = [
