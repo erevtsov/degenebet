@@ -118,3 +118,39 @@ def test_spread_model_defaults_to_linear_regression() -> None:
     model = SpreadModel()
 
     assert isinstance(model.model, LinearRegression)
+
+
+class _PerfectRegressor:
+    """Test double that memorizes and replays the exact fit targets,
+    forcing residuals of exactly 0.0 — used to force a degenerate
+    (residual_std == 0) fit deterministically, without relying on
+    floating-point luck from a "nearly perfect" real regression."""
+
+    def __init__(self) -> None:
+        self._y: npt.NDArray[np.float64] | None = None
+
+    def fit(self, X: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> _PerfectRegressor:
+        self._y = y
+        return self
+
+    def predict(self, X: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        assert self._y is not None
+        return self._y
+
+
+def test_fit_raises_on_zero_residual_std() -> None:
+    model = SpreadModel(model=_PerfectRegressor())
+    table = _noiseless_table()
+
+    with pytest.raises(ValueError, match="degenerate residual_std"):
+        model.fit(table)
+
+
+def test_fit_raises_on_single_row_train_set() -> None:
+    # np.std(residuals, ddof=1) on a 1-row train set is NaN (n - ddof = 0);
+    # numpy warns about this expected division before we raise on it.
+    model = SpreadModel()
+    table = _noiseless_table().head(1)
+
+    with pytest.warns(RuntimeWarning), pytest.raises(ValueError, match="degenerate residual_std"):
+        model.fit(table)

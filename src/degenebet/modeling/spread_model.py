@@ -45,7 +45,16 @@ class SpreadModel:
         target = model_table["result"].to_numpy()
         self.model.fit(features, target)
         residuals = target - self.model.predict(features)
-        self._residual_std = float(np.std(residuals, ddof=1))
+        residual_std = float(np.std(residuals, ddof=1))
+        # A non-finite (e.g. NaN from a 1-row train set, ddof=1) or
+        # non-positive (e.g. ~0 from a perfect/degenerate fit) residual_std
+        # would silently produce NaN/inf home_cover_probability later.
+        if not np.isfinite(residual_std) or residual_std <= 0:
+            raise ValueError(
+                f"SpreadModel.fit() produced a degenerate residual_std={residual_std!r}; "
+                "training data is likely too small or perfectly collinear."
+            )
+        self._residual_std = residual_std
 
     def predict(self, model_table: pl.DataFrame) -> pl.DataFrame:
         """Returns model_table with a new `predicted_result` column."""
