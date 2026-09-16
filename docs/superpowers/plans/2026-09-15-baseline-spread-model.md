@@ -14,7 +14,7 @@
 
 - Polars for all tabular data; numpy only at the sklearn/scipy call boundary (`.to_numpy()`); pandas never used.
 - **Verified data facts (not assumptions — confirmed against real data during design):**
-  - `spread_line` is negative when the home team is favored. Home team's cover margin is `result + spread_line`: positive → home covers, negative → away covers, zero → push.
+  - `spread_line` is positive when the home team is favored (corrected during the final fix wave — the original claim had the sign backwards; a moneyline cross-check and an asymmetric close-game example distinguish the two conventions, where the original verification's blowout-only games could not). Home team's cover margin is `result - spread_line`: positive → home covers, negative → away covers, zero → push.
   - `offense_epa_per_play = (passing_epa + rushing_epa) / (attempts + carries)` — do **not** add `receiving_epa`, it double-counts the same pass plays from the receiver's perspective.
   - `team_stats` has no direct "defensive EPA allowed" column — derive it as the opponent's `offense_epa_per_play` in the same `game_id`, via a join on `(game_id, opponent_team=team)`.
   - Rolling features use `.shift(1)` before `.rolling_mean(window_size=..., min_samples=...)` (note: this installed polars version's parameter is `min_samples`, not `min_periods`) `.over("team")` — this excludes the current game from its own rolling average. Rows below `min_history` are dropped, never padded.
@@ -559,12 +559,12 @@ class SpreadModel:
 
     def cover_probability(self, model_table: pl.DataFrame) -> pl.DataFrame:
         """Requires `spread_line` present. Adds `home_cover_probability` via
-        normal_cdf((predicted_result + spread_line) / residual_std)."""
+        normal_cdf((predicted_result - spread_line) / residual_std)."""
         if self._residual_std is None:
             raise RuntimeError("SpreadModel.fit() must be called before cover_probability().")
         if "predicted_result" not in model_table.columns:
             model_table = self.predict(model_table)
-        edge = (model_table["predicted_result"] + model_table["spread_line"]) / self._residual_std
+        edge = (model_table["predicted_result"] - model_table["spread_line"]) / self._residual_std
         probabilities = norm.cdf(edge.to_numpy())
         return model_table.with_columns(pl.Series("home_cover_probability", probabilities))
 ```
@@ -642,10 +642,12 @@ def _model_table() -> pl.DataFrame:
     )
 
     # Test games: predicted_result ~= 10 * home_offense_epa.
-    # g_home_bet: home_offense_epa=0.5 -> predicted~5; spread_line=-1 -> edge~4 > 1.0 -> bet home; result=6 -> covers (6-1=5>0)
-    # g_away_bet: home_offense_epa=-0.5 -> predicted~-5; spread_line=1 -> edge~-4 < -1.0 -> bet away; result=-6 -> away covers (-6+1=-5<0)
-    # g_no_bet: home_offense_epa=0.05 -> predicted~0.5; spread_line=0 -> edge~0.5, within threshold -> no bet
-    # g_push: home_offense_epa=0.5 -> predicted~5; spread_line=-5 -> edge~0, no bet either (kept simple: no push case forced, backtest naturally excludes it)
+    # g_home_bet: home_offense_epa=0.5 -> predicted~5; spread_line=-1 -> edge=5-(-1)=6 > 1.0 -> bet home; result=6 -> covers (6-(-1)=7>0)
+    # g_away_bet: home_offense_epa=-0.5 -> predicted~-5; spread_line=1 -> edge=-5-1=-6 < -1.0 -> bet away; result=-6 -> away covers (-6-1=-7<0)
+    # g_no_bet: home_offense_epa=0.05 -> predicted~0.5; spread_line=0 -> edge=0.5-0=0.5, within threshold -> no bet
+    # (see tests/modeling/test_backtest.py for the corrected, hand-recomputed
+    # push case — this plan snippet is a historical record of the original
+    # (buggy) sign convention's illustrative comments, superseded there)
     test = pl.DataFrame(
         {
             "game_id": ["g_home_bet", "g_away_bet", "g_no_bet"],
@@ -729,7 +731,7 @@ def run_backtest(
 
     Bets 1 unit on the side (home/away) whose edge exceeds edge_threshold;
     skips games without sufficient edge. Scores each bet against the real
-    `result` via the cover-margin formula (result + spread_line) at -110
+    `result` via the cover-margin formula (result - spread_line) at -110
     pricing (push refunds the bet, excluded from win rate).
     """
     train = model_table.filter(pl.col("season").is_in(train_seasons))
@@ -739,7 +741,7 @@ def run_backtest(
     model.fit(train)
     predicted = model.predict(test)
 
-    predicted = predicted.with_columns((pl.col("predicted_result") + pl.col("spread_line")).alias("edge")).with_columns(
+    predicted = predicted.with_columns((pl.col("predicted_result") - pl.col("spread_line")).alias("edge")).with_columns(
         pl.when(pl.col("edge") > edge_threshold)
         .then(pl.lit("home"))
         .when(pl.col("edge") < -edge_threshold)
@@ -750,7 +752,7 @@ def run_backtest(
 
     bets_df = (
         predicted.filter(pl.col("side") != "none")
-        .with_columns((pl.col("result") + pl.col("spread_line")).alias("home_cover_margin"))
+        .with_columns((pl.col("result") - pl.col("spread_line")).alias("home_cover_margin"))
         .with_columns(
             (pl.col("home_cover_margin") == 0).alias("push"),
             pl.when(pl.col("side") == "home")
@@ -859,7 +861,7 @@ def golden_model_table() -> pl.DataFrame:
     design = np.column_stack([features[c] for c in _FEATURE_COLUMNS])
     noise = rng.normal(loc=0.0, scale=2.0, size=n)
     result = design @ true_coefs + noise
-    spread_line = -result + rng.normal(loc=0.0, scale=3.0, size=n)  # a noisy "market" around the true result
+    spread_line = result + rng.normal(loc=0.0, scale=3.0, size=n)  # a noisy "market" around the true result
 
     data = {**features, "result": result, "spread_line": spread_line}
     return pl.DataFrame(data)
