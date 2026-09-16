@@ -58,12 +58,16 @@ work.
 - `degenebet.data.load_schedules()` already provides `result` (a column
   equal to `home_score - away_score`, confirmed by direct inspection — not
   computed manually) and `spread_line` with **zero nulls** for 2022-2023.
-- `spread_line` sign convention (verified against 5 real lopsided 2023
-  games): **negative means the home team is favored** by that many points
-  (e.g. `-3.5` = home favored by 3.5). Home team's cover margin is
-  `result + spread_line`: positive → home covers, negative → away covers,
-  zero → push. This formula was checked against all 5 sample games and
-  matched in every case.
+- `spread_line` sign convention (corrected during the final fix wave —
+  see below): **positive means the home team is favored** by that many
+  points (e.g. `+3.5` = home favored by 3.5). Home team's cover margin is
+  `result - spread_line`: positive → home covers, negative → away covers,
+  zero → push. The original 5-game verification was flawed: it only used
+  blowout games, where the actual margin dwarfs the spread and both sign
+  conventions produce the same-sign (and thus indistinguishable) result;
+  a moneyline cross-check and an asymmetric/close-game example (home
+  favored by a wide margin but winning narrowly) are what actually
+  distinguish the two conventions.
 - `degenebet.data.load_team_stats()` provides one row per team per game
   (`game_id`, `team`, `opponent_team` columns present) with `passing_epa`,
   `rushing_epa`, `attempts`, `carries` — all confirmed populated (zero
@@ -157,7 +161,7 @@ class SpreadModel:
     def cover_probability(self, model_table: pl.DataFrame) -> pl.DataFrame:
         """Requires `spread_line` and `predicted_result` present. Adds a
         `home_cover_probability` column via
-        normal_cdf((predicted_result + spread_line) / residual_std).
+        normal_cdf((predicted_result - spread_line) / residual_std).
         Must call predict() first, or this calls it internally."""
 ```
 
@@ -188,7 +192,7 @@ def run_backtest(
 ) -> BacktestResult:
     """Fits a fresh SpreadModel on train_seasons only, predicts on
     test_seasons. For each test game, bets 1 unit on the side (home or
-    away) where |predicted_result - (-spread_line)| exceeds edge_threshold;
+    away) where |predicted_result - spread_line| exceeds edge_threshold;
     skips games with no sufficient edge. Scores each bet against the real
     `result` using the cover-margin formula (see Data facts above) at -110
     pricing (risk 1.1 units to win 1.0; push refunds the bet, excluded from
