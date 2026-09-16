@@ -32,7 +32,7 @@ def golden_model_table() -> pl.DataFrame:
     noise = rng.normal(loc=0.0, scale=2.0, size=n)
     result = design @ true_coefs + noise
     # A noisy "market" around the true result.
-    spread_line = -result + rng.normal(loc=0.0, scale=3.0, size=n)
+    spread_line = result + rng.normal(loc=0.0, scale=3.0, size=n)
 
     data = {**features, "result": result, "spread_line": spread_line}
     return pl.DataFrame(data)

@@ -55,11 +55,11 @@ class SpreadModel:
 
     def cover_probability(self, model_table: pl.DataFrame) -> pl.DataFrame:
         """Requires `spread_line` present. Adds `home_cover_probability` via
-        normal_cdf((predicted_result + spread_line) / residual_std)."""
+        normal_cdf((predicted_result - spread_line) / residual_std)."""
         if self._residual_std is None:
             raise RuntimeError("SpreadModel.fit() must be called before cover_probability().")
         if "predicted_result" not in model_table.columns:
             model_table = self.predict(model_table)
-        edge = (model_table["predicted_result"] + model_table["spread_line"]) / self._residual_std
+        edge = (model_table["predicted_result"] - model_table["spread_line"]) / self._residual_std
         probabilities = norm.cdf(edge.to_numpy())
         return model_table.with_columns(pl.Series("home_cover_probability", probabilities))

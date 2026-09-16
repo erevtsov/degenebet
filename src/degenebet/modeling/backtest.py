@@ -32,7 +32,7 @@ def run_backtest(
 
     Bets 1 unit on the side (home/away) whose edge exceeds edge_threshold;
     skips games without sufficient edge. Scores each bet against the real
-    `result` via the cover-margin formula (result + spread_line) at -110
+    `result` via the cover-margin formula (result - spread_line) at -110
     pricing (push refunds the bet, excluded from win rate).
     """
     train = model_table.filter(pl.col("season").is_in(train_seasons))
@@ -43,7 +43,7 @@ def run_backtest(
     predicted = model.predict(test)
 
     predicted = predicted.with_columns(
-        (pl.col("predicted_result") + pl.col("spread_line")).alias("edge")
+        (pl.col("predicted_result") - pl.col("spread_line")).alias("edge")
     ).with_columns(
         pl.when(pl.col("edge") > edge_threshold)
         .then(pl.lit("home"))
@@ -55,7 +55,7 @@ def run_backtest(
 
     bets_df = (
         predicted.filter(pl.col("side") != "none")
-        .with_columns((pl.col("result") + pl.col("spread_line")).alias("home_cover_margin"))
+        .with_columns((pl.col("result") - pl.col("spread_line")).alias("home_cover_margin"))
         .with_columns(
             (pl.col("home_cover_margin") == 0).alias("push"),
             pl.when(pl.col("side") == "home")
