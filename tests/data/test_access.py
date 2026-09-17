@@ -342,3 +342,51 @@ def test_get_team_data_selects_snapshot_closest_to_but_not_after_as_of_date(
 
     assert between_t1_and_t2["spread_line"][0] == pytest.approx(2.5)
     assert at_or_after_t2["spread_line"][0] == pytest.approx(7.5)
+
+
+def test_get_team_data_end_to_end_with_real_sources(tmp_path: object) -> None:
+    """Exercises the real NflverseSource + SharpApiSource + DataAccess chain
+    together -- every other DataAccess test uses a fake DataSource, so this
+    is the only test that would have caught C1/C2/C3 (wrong archive path,
+    look-ahead-unsafe snapshot blending, UTC-vs-Eastern gameday mismatch)."""
+    nflverse_cache.load_or_merge(
+        pl.DataFrame(
+            [
+                _raw_nflverse_schedule_row(
+                    game_id="2026_03_MIN_CHI",
+                    week=3,
+                    gameday="2026-09-18",
+                    result=None,
+                    spread_line=None,
+                )
+            ]
+        ),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+    _write_snapshot(
+        tmp_path,
+        [
+            # 2026-09-19T00:20:00Z is 8:20pm ET on 2026-09-18 -- a Thursday
+            # night kickoff, chosen deliberately to also cover the C3
+            # timezone fix in this end-to-end path.
+            _spread_row(
+                home_team="Chicago Bears",
+                away_team="Minnesota Vikings",
+                line=-3.5,
+                event_start_time="2026-09-19T00:20:00Z",
+                pulled_at=datetime(2026, 9, 17, tzinfo=UTC),
+            )
+        ],
+    )
+
+    result = DataAccess(NflverseSource(), SharpApiSource()).get_team_data(
+        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 18)
+    )
+
+    row = result.filter(pl.col("game_id") == "2026_03_MIN_CHI")
+    assert row.height == 1
+    assert row["home_team"][0] == "chi"
+    assert row["away_team"][0] == "min"
+    assert row["spread_line"][0] == pytest.approx(3.5)
