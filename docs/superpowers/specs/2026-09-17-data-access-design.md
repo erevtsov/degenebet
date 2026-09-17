@@ -80,17 +80,37 @@ The two sources are committed to the `data` branch as-is, and each already
 has (or gets) a different storage shape — this sub-project doesn't invent a
 new scheme, it makes explicit what each already does or needs:
 
-- **`nflreadpy` cache** — opaque, managed entirely by `nflreadpy`'s own
-  filesystem cache (`src/degenebet/data/nflverse.py` just wraps
-  `nflreadpy.load_*`). Whatever that library does internally (in practice,
-  refreshing/overwriting its own per-season files as more games complete) is
-  committed to the `data` branch unmodified — this project doesn't manage
-  that format. "Stored with a timestamp" for this source is satisfied by git
-  itself: every scheduled-fetch commit is a timestamped snapshot in the
-  branch's history, even though the *working tree* shows only the latest
-  state. `DataAccess` never needs an old commit's version of this data —
-  completed-game stats don't get revised, so the latest fetch is always a
-  superset of any earlier one.
+- **`nflreadpy` cache** — **not** a bare pass-through of `nflreadpy`'s own
+  internal cache. Relying on "the latest fetch is always a superset of any
+  earlier one" is an assumption, not a guarantee: if the upstream API ever
+  starts limiting the historical range it returns, hits a rate limit
+  mid-pull, or returns a transient partial response, a naive overwrite would
+  silently commit that shrinkage to the `data` branch — recoverable only by
+  manually digging through git history, which a scheduled unattended job
+  won't do on its own.
+
+  Instead, `degenebet fetch` **merges** each fetch into our own persisted
+  parquet store for these tables (a new small module alongside
+  `data/cache.py`, since `nflreadpy`'s own cache format is opaque and not
+  something we control): union the new fetch with the existing cached file,
+  keyed by natural identity (`game_id` for schedules; `(game_id, team)` for
+  team_stats). A key present in both keeps the **new** value (so legitimate
+  `nflverse` corrections still propagate); a key present in the old cache
+  but **missing** from the new fetch keeps the **old** value rather than
+  disappearing. This makes the cache monotonically non-shrinking regardless
+  of what the upstream API decides to return on any given fetch.
+
+  As defense in depth on top of the merge (which already prevents data
+  loss), the fetch also compares the new pull's row count against the
+  existing cache per season/table and **fails loudly — no commit — if it
+  drops**. This doesn't protect against loss (the merge already does that);
+  it protects against a shrinking upstream response going unnoticed, since a
+  sustained range limit would otherwise just quietly stop contributing
+  new-key overwrites without ever surfacing as something to investigate.
+
+  "Stored with a timestamp" for this source is satisfied by git itself:
+  every scheduled-fetch commit is a timestamped snapshot in the branch's
+  history.
 - **SharpAPI cache (`src/degenebet/data/cache.py`)** — already append-only,
   confirmed by reading the existing implementation: `load_or_fetch` writes a
   new `{source}_{pulled_at}.parquet` file per fetch and never deletes older
@@ -104,6 +124,13 @@ new scheme, it makes explicit what each already does or needs:
   now. Revisit only if the `data` branch's size actually becomes a problem.
 
 ### Non-goals (deferred, not decided against)
+
+- **Handling legitimate upstream deletions** (e.g. `nflverse` retracting a
+  duplicate or erroneous row entirely, not correcting its values) — the
+  merge is keep-old-if-missing-from-new by design, so a genuine deletion
+  upstream would not propagate. Not building reconciliation for this now;
+  it's a rare case and the row-count-drop guard would at least surface it
+  for manual review rather than silently diverging.
 
 - Automating the local sync trigger (a launchd/cron job that runs
   `degenebet fetch --sync` periodically) — confirmed deferred by explicit
@@ -123,6 +150,14 @@ network calls in the default test run:
   same game).
 - "Current fills only the gap" behavior (current-source rows for games
   `historical` already has are dropped, not merged).
+- Merge-cache upsert behavior: a key in both old and new takes the new
+  value; a key only in the old cache survives; a key only in the new fetch
+  is added. This is the core correctness property this whole design exists
+  for — needs direct unit coverage, not just exercised incidentally through
+  `get_team_data`.
+- Row-count-drop guard: fetch raises/refuses to commit when a season's
+  merged row count would be lower than the existing cache's for that
+  season.
 - The scheduled-fetch workflow and `--sync` command are integration/CI
   concerns, not unit-testable against fixtures; they get verified by running
   them for real (workflow dispatch / manual `fetch --sync` run) rather than
