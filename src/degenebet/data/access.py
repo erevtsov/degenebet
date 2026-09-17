@@ -70,10 +70,13 @@ class DataSource(Protocol):
 
 
 class SharpApiSource:
-    """Current-odds source: one row per (home_team, away_team, gameday) with
-    `spread_line` in nflreadpy's sign convention (positive = home favored),
-    the median main-line home spread across sportsbooks and retained
-    snapshots as of the latest snapshot in cache."""
+    """Current-odds source: one row per (home_team, away_team, gameday,
+    pulled_at) with `spread_line` in nflreadpy's sign convention (positive =
+    home favored) -- the median main-line home spread across sportsbooks
+    *within* a single snapshot. Snapshots are never collapsed across
+    `pulled_at` here: DataAccess.get_team_data is what picks the
+    as-of-correct snapshot per game, since only it knows the query's
+    as_of_date."""
 
     def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
         raw = cache.load_all_snapshots("sharpapi")
@@ -102,8 +105,8 @@ class SharpApiSource:
             & (pl.col("gameday") <= end_date.isoformat())
         )
 
-        return in_range.group_by(["home_team", "away_team", "gameday"]).agg(
-            pl.col("spread_line").median(), pl.col("pulled_at").max()
+        return in_range.group_by(["home_team", "away_team", "gameday", "pulled_at"]).agg(
+            pl.col("spread_line").median()
         )
 
 
@@ -147,18 +150,33 @@ class DataAccess:
         if historical.height > 0:
             earliest = str(historical["gameday"].min())
             if as_of_date.isoformat() < earliest:
+                # Informational only -- do NOT clamp as_of_date forward.
+                # Clamping would admit SharpAPI snapshots pulled after the
+                # true requested as_of_date (a look-ahead leak); the honest
+                # behavior for "as_of_date predates any cached history" is
+                # to proceed with the original as_of_date, which naturally
+                # yields an empty/limited `current` contribution below.
                 warnings.warn(
                     f"as_of_date {as_of_date} predates earliest cached history "
-                    f"{earliest}; clamping to {earliest}.",
+                    f"{earliest}.",
                     stacklevel=2,
                 )
-                as_of_date = date.fromisoformat(earliest)
 
         current_asof = (
             current.filter(pl.col("pulled_at").dt.date() <= as_of_date)
             if current.height > 0
             else current
         )
+        if current_asof.height > 0:
+            # Multiple snapshots may survive the as-of cutoff for the same
+            # game (SharpAPI is polled repeatedly); keep only the one
+            # closest to (but not after) as_of_date -- the latest pulled_at
+            # per game among those already filtered above.
+            current_asof = (
+                current_asof.sort("pulled_at")
+                .group_by(["home_team", "away_team", "gameday"], maintain_order=True)
+                .last()
+            )
 
         unresolved = historical.filter(pl.col("result").is_null()).select(
             "game_id", "home_team", "away_team", "gameday"

@@ -107,6 +107,29 @@ def test_fetch_returns_empty_frame_when_nothing_cached() -> None:
     assert result.height == 0
 
 
+def test_fetch_returns_one_row_per_snapshot_not_collapsed_across_snapshots(
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    path = Path(str(tmp_path)) / "sharpapi"
+    path.mkdir(parents=True, exist_ok=True)
+    t1 = datetime(2026, 9, 15, tzinfo=UTC)
+    t2 = datetime(2026, 9, 17, tzinfo=UTC)
+    pl.DataFrame([_spread_row(line=-2.5, pulled_at=t1)]).write_parquet(
+        path / "sharpapi_20260915T000000Z.parquet"
+    )
+    pl.DataFrame([_spread_row(line=-7.5, pulled_at=t2)]).write_parquet(
+        path / "sharpapi_20260917T000000Z.parquet"
+    )
+
+    result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    assert result.height == 2
+    assert sorted(result["pulled_at"].to_list()) == [t1, t2]
+    assert sorted(result["spread_line"].to_list()) == [pytest.approx(2.5), pytest.approx(7.5)]
+
+
 def test_sharpapi_crosswalk_covers_every_canonical_team() -> None:
     from degenebet.data import access, teams
 
@@ -252,21 +275,61 @@ def test_get_team_data_falls_back_to_historical_when_current_missing_game() -> N
     assert result["spread_line"][0] == pytest.approx(1.0)
 
 
-def test_get_team_data_warns_and_clamps_as_of_before_earliest_history() -> None:
-    historical = _FakeSource(pl.DataFrame([_schedule_row(gameday="2026-09-06")]))
+def test_get_team_data_warns_when_as_of_before_earliest_history() -> None:
+    historical = _FakeSource(
+        pl.DataFrame([_schedule_row(gameday="2026-09-06", result=None, spread_line=1.0)])
+    )
+    # A current snapshot pulled well after the (very early) as_of_date --
+    # under the old clamp-forward behavior, as_of_date would be moved to
+    # "2026-09-06" (historical's earliest gameday), which is >= this
+    # pulled_at, so it would wrongly win over historical's own line. With
+    # clamping removed, the original as_of_date (2020-01-01) is used as the
+    # cutoff, this snapshot is excluded, and historical's line is the
+    # correct, honest answer.
     current = _FakeSource(
         pl.DataFrame(
-            schema={
-                "home_team": pl.Utf8,
-                "away_team": pl.Utf8,
-                "gameday": pl.Utf8,
-                "spread_line": pl.Float64,
-                "pulled_at": pl.Datetime(time_zone="UTC"),
+            {
+                "home_team": ["chi"],
+                "away_team": ["min"],
+                "gameday": ["2026-09-06"],
+                "spread_line": [99.0],
+                "pulled_at": [datetime(2026, 9, 5, tzinfo=UTC)],
             }
         )
     )
 
     with pytest.warns(UserWarning, match="predates earliest cached history"):
-        DataAccess(historical, current).get_team_data(
+        result = DataAccess(historical, current).get_team_data(
             date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2020, 1, 1)
         )
+
+    assert result["spread_line"][0] == pytest.approx(1.0)
+
+
+def test_get_team_data_selects_snapshot_closest_to_but_not_after_as_of_date(
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    path = Path(str(tmp_path)) / "sharpapi"
+    path.mkdir(parents=True, exist_ok=True)
+    t1 = datetime(2026, 9, 15, tzinfo=UTC)
+    t2 = datetime(2026, 9, 17, tzinfo=UTC)
+    pl.DataFrame([_spread_row(line=-2.5, pulled_at=t1)]).write_parquet(
+        path / "sharpapi_20260915T000000Z.parquet"
+    )
+    pl.DataFrame([_spread_row(line=-7.5, pulled_at=t2)]).write_parquet(
+        path / "sharpapi_20260917T000000Z.parquet"
+    )
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=None)]))
+    current = SharpApiSource()
+
+    between_t1_and_t2 = DataAccess(historical, current).get_team_data(
+        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 16)
+    )
+    at_or_after_t2 = DataAccess(historical, current).get_team_data(
+        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 18)
+    )
+
+    assert between_t1_and_t2["spread_line"][0] == pytest.approx(2.5)
+    assert at_or_after_t2["spread_line"][0] == pytest.approx(7.5)
