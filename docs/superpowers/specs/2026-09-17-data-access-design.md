@@ -74,6 +74,35 @@ infrastructure this repo already has:
   branches, or the fetch workflow at all. This keeps the read path exactly
   as simple as architecture-notes.md already specified.
 
+### 3. Storage semantics: append vs. overwrite differ per source
+
+The two sources are committed to the `data` branch as-is, and each already
+has (or gets) a different storage shape — this sub-project doesn't invent a
+new scheme, it makes explicit what each already does or needs:
+
+- **`nflreadpy` cache** — opaque, managed entirely by `nflreadpy`'s own
+  filesystem cache (`src/degenebet/data/nflverse.py` just wraps
+  `nflreadpy.load_*`). Whatever that library does internally (in practice,
+  refreshing/overwriting its own per-season files as more games complete) is
+  committed to the `data` branch unmodified — this project doesn't manage
+  that format. "Stored with a timestamp" for this source is satisfied by git
+  itself: every scheduled-fetch commit is a timestamped snapshot in the
+  branch's history, even though the *working tree* shows only the latest
+  state. `DataAccess` never needs an old commit's version of this data —
+  completed-game stats don't get revised, so the latest fetch is always a
+  superset of any earlier one.
+- **SharpAPI cache (`src/degenebet/data/cache.py`)** — already append-only,
+  confirmed by reading the existing implementation: `load_or_fetch` writes a
+  new `{source}_{pulled_at}.parquet` file per fetch and never deletes older
+  ones; `_latest_snapshot` just picks the newest by filename sort. This
+  sub-project keeps that behavior as-is rather than collapsing it to a
+  single overwritten file — multiple retained snapshots are exactly what
+  lets `DataAccess` pick "the snapshot closest to, but not after,
+  `as_of_date`" for a given point in time, not just "the latest."
+- **Growth**: daily cadence × one small odds snapshot/day is on the order of
+  a few KB/day, trivial even over years — no pruning/retention policy for
+  now. Revisit only if the `data` branch's size actually becomes a problem.
+
 ### Non-goals (deferred, not decided against)
 
 - Automating the local sync trigger (a launchd/cron job that runs
