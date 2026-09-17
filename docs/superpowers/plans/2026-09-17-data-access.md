@@ -16,6 +16,7 @@
 - `DataAccess`, `NflverseSource`, and `SharpApiSource` never call the network or `nflreadpy`/SharpAPI directly — they only read local files that a separate fetch/sync step already wrote.
 - No live network calls in the default test run; mock `httpx`/`nflreadpy`/`subprocess`, never real ones.
 - `spread_line` sign convention: **positive means home favored.** SharpAPI's raw `line` is the opposite (favorite negative) — confirmed against real API data on 2026-09-17 (Bears home vs. Vikings: home selection line `-2.5`, away `+2.5`).
+- Naming convention: lower_snake_case throughout — column names (already the case for both `nflreadpy` and SharpAPI's raw JSON) and canonical team codes (`teams.CANONICAL_TEAMS` is lowercase, e.g. `"buf"`; `nflreadpy`'s own raw data is uppercase, so `NflverseSource.fetch()` lowercases at the read boundary — see Task 8).
 - Never commit secrets. `SHARPAPI_KEY` reaches the scheduled workflow only via a GitHub Actions repository secret — a manual step for a human with repo admin access, not something this plan's tasks can do.
 - `just check` (ruff check, ruff format --check, mypy, pytest) must pass before any task is done.
 - Test-first: write the failing test before the implementation for every step below.
@@ -816,16 +817,21 @@ other vendor's team identifiers (e.g. SharpAPI's "Buffalo Bills" full
 names) have to line up with these codes for DataAccess to join across
 sources at all. See DataSource's docstring in access.py for the full
 cross-vendor join contract this is one piece of.
+
+Codes are lowercase (nflreadpy's own raw data is uppercase, e.g. "BUF") --
+this project's naming convention is lower_snake_case throughout, so
+NflverseSource.fetch() lowercases at the read boundary rather than the
+canonical set matching the vendor's casing.
 """
 
 from __future__ import annotations
 
 CANONICAL_TEAMS: frozenset[str] = frozenset(
     {
-        "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN",
-        "DET", "GB", "HOU", "IND", "JAX", "KC", "LA", "LAC", "LV", "MIA",
-        "MIN", "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SF", "SEA", "TB",
-        "TEN", "WAS",
+        "ari", "atl", "bal", "buf", "car", "chi", "cin", "cle", "dal", "den",
+        "det", "gb", "hou", "ind", "jax", "kc", "la", "lac", "lv", "mia",
+        "min", "ne", "no", "nyg", "nyj", "phi", "pit", "sf", "sea", "tb",
+        "ten", "was",
     }
 )
 
@@ -966,7 +972,7 @@ def test_fetch_converts_sign_home_favored(tmp_path: object) -> None:
 
     result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
 
-    row = result.filter((pl.col("home_team") == "CHI") & (pl.col("away_team") == "MIN"))
+    row = result.filter((pl.col("home_team") == "chi") & (pl.col("away_team") == "min"))
     assert row["spread_line"][0] == pytest.approx(2.5)
 
 
@@ -975,7 +981,7 @@ def test_fetch_converts_sign_away_favored(tmp_path: object) -> None:
 
     result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
 
-    row = result.filter((pl.col("home_team") == "CHI") & (pl.col("away_team") == "MIN"))
+    row = result.filter((pl.col("home_team") == "chi") & (pl.col("away_team") == "min"))
     assert row["spread_line"][0] == pytest.approx(-3.0)
 
 
@@ -991,7 +997,7 @@ def test_fetch_takes_median_across_sportsbooks(tmp_path: object) -> None:
 
     result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
 
-    row = result.filter((pl.col("home_team") == "CHI") & (pl.col("away_team") == "MIN"))
+    row = result.filter((pl.col("home_team") == "chi") & (pl.col("away_team") == "min"))
     assert row["spread_line"][0] == pytest.approx(2.5)  # median of 2.5/3.0/1.0
 
 
@@ -1074,38 +1080,38 @@ from degenebet.data import cache, teams
 # Validated against teams.CANONICAL_TEAMS below, not just by this module's
 # own tests happening to exercise every team.
 _SHARPAPI_TEAM_CROSSWALK: dict[str, str] = {
-    "Arizona Cardinals": "ARI",
-    "Atlanta Falcons": "ATL",
-    "Baltimore Ravens": "BAL",
-    "Buffalo Bills": "BUF",
-    "Carolina Panthers": "CAR",
-    "Chicago Bears": "CHI",
-    "Cincinnati Bengals": "CIN",
-    "Cleveland Browns": "CLE",
-    "Dallas Cowboys": "DAL",
-    "Denver Broncos": "DEN",
-    "Detroit Lions": "DET",
-    "Green Bay Packers": "GB",
-    "Houston Texans": "HOU",
-    "Indianapolis Colts": "IND",
-    "Jacksonville Jaguars": "JAX",
-    "Kansas City Chiefs": "KC",
-    "Las Vegas Raiders": "LV",
-    "Los Angeles Chargers": "LAC",
-    "Los Angeles Rams": "LA",
-    "Miami Dolphins": "MIA",
-    "Minnesota Vikings": "MIN",
-    "New England Patriots": "NE",
-    "New Orleans Saints": "NO",
-    "New York Giants": "NYG",
-    "New York Jets": "NYJ",
-    "Philadelphia Eagles": "PHI",
-    "Pittsburgh Steelers": "PIT",
-    "San Francisco 49ers": "SF",
-    "Seattle Seahawks": "SEA",
-    "Tampa Bay Buccaneers": "TB",
-    "Tennessee Titans": "TEN",
-    "Washington Commanders": "WAS",
+    "Arizona Cardinals": "ari",
+    "Atlanta Falcons": "atl",
+    "Baltimore Ravens": "bal",
+    "Buffalo Bills": "buf",
+    "Carolina Panthers": "car",
+    "Chicago Bears": "chi",
+    "Cincinnati Bengals": "cin",
+    "Cleveland Browns": "cle",
+    "Dallas Cowboys": "dal",
+    "Denver Broncos": "den",
+    "Detroit Lions": "det",
+    "Green Bay Packers": "gb",
+    "Houston Texans": "hou",
+    "Indianapolis Colts": "ind",
+    "Jacksonville Jaguars": "jax",
+    "Kansas City Chiefs": "kc",
+    "Las Vegas Raiders": "lv",
+    "Los Angeles Chargers": "lac",
+    "Los Angeles Rams": "la",
+    "Miami Dolphins": "mia",
+    "Minnesota Vikings": "min",
+    "New England Patriots": "ne",
+    "New Orleans Saints": "no",
+    "New York Giants": "nyg",
+    "New York Jets": "nyj",
+    "Philadelphia Eagles": "phi",
+    "Pittsburgh Steelers": "pit",
+    "San Francisco 49ers": "sf",
+    "Seattle Seahawks": "sea",
+    "Tampa Bay Buccaneers": "tb",
+    "Tennessee Titans": "ten",
+    "Washington Commanders": "was",
 }
 
 teams.assert_maps_to_canonical_teams(_SHARPAPI_TEAM_CROSSWALK)
@@ -1193,6 +1199,26 @@ from degenebet.data.access import DataAccess, NflverseSource
 
 
 def _schedule_row(**overrides: object) -> dict[str, object]:
+    """A DataSource.fetch() row already in canonical form (lowercase team
+    codes) -- used to build _FakeSource fixtures standing in for a
+    DataSource's output, not for raw merged-store content."""
+    row: dict[str, object] = {
+        "game_id": "2026_02_MIN_CHI",
+        "season": 2026,
+        "week": 2,
+        "gameday": "2026-09-20",
+        "home_team": "chi",
+        "away_team": "min",
+        "result": None,
+        "spread_line": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _raw_nflverse_schedule_row(**overrides: object) -> dict[str, object]:
+    """A row as nflreadpy actually returns it (uppercase team codes) --
+    used only to test NflverseSource's own raw-to-canonical transform."""
     row: dict[str, object] = {
         "game_id": "2026_02_MIN_CHI",
         "season": 2026,
@@ -1218,7 +1244,10 @@ class _FakeSource:
 def test_nflverse_source_reads_merged_store_filtered_to_range() -> None:
     nflverse_cache.load_or_merge(
         pl.DataFrame(
-            [_schedule_row(gameday="2026-09-06"), _schedule_row(gameday="2026-10-06")]
+            [
+                _raw_nflverse_schedule_row(gameday="2026-09-06"),
+                _raw_nflverse_schedule_row(gameday="2026-10-06"),
+            ]
         ),
         name="schedules",
         key_columns=["game_id"],
@@ -1231,6 +1260,20 @@ def test_nflverse_source_reads_merged_store_filtered_to_range() -> None:
     assert result["gameday"][0] == "2026-09-06"
 
 
+def test_nflverse_source_lowercases_team_codes() -> None:
+    nflverse_cache.load_or_merge(
+        pl.DataFrame([_raw_nflverse_schedule_row()]),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+
+    result = NflverseSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    assert result["home_team"][0] == "chi"
+    assert result["away_team"][0] == "min"
+
+
 def test_get_team_data_prefers_current_for_unplayed_game_even_with_stale_historical_line() -> None:
     historical = _FakeSource(
         pl.DataFrame([_schedule_row(result=None, spread_line=1.0)])
@@ -1238,8 +1281,8 @@ def test_get_team_data_prefers_current_for_unplayed_game_even_with_stale_histori
     current = _FakeSource(
         pl.DataFrame(
             {
-                "home_team": ["CHI"],
-                "away_team": ["MIN"],
+                "home_team": ["chi"],
+                "away_team": ["min"],
                 "gameday": ["2026-09-20"],
                 "spread_line": [2.5],
                 "pulled_at": [datetime(2026, 9, 17, tzinfo=UTC)],
@@ -1261,8 +1304,8 @@ def test_get_team_data_historical_wins_for_settled_result() -> None:
     current = _FakeSource(
         pl.DataFrame(
             {
-                "home_team": ["CHI"],
-                "away_team": ["MIN"],
+                "home_team": ["chi"],
+                "away_team": ["min"],
                 "gameday": ["2026-09-20"],
                 "spread_line": [2.5],
                 "pulled_at": [datetime(2026, 9, 17, tzinfo=UTC)],
@@ -1332,7 +1375,11 @@ Add `import warnings` to `access.py`'s imports, and add `from degenebet.data imp
 ```python
 class NflverseSource:
     """Historical schedule source: reads the persisted merged schedules
-    store (nflverse_cache.py), never the network."""
+    store (nflverse_cache.py), never the network. nflreadpy's own team
+    codes are uppercase ("BUF") -- lowercased here to teams.CANONICAL_TEAMS'
+    convention, since this is the canonicalization boundary (raw cached
+    files keep the vendor's native format, same principle as
+    SharpApiSource)."""
 
     def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
         merged = nflverse_cache.read_merged("schedules")
@@ -1344,6 +1391,9 @@ class NflverseSource:
         return merged.filter(
             (pl.col("gameday") >= start_date.isoformat())
             & (pl.col("gameday") <= end_date.isoformat())
+        ).with_columns(
+            pl.col("home_team").str.to_lowercase(),
+            pl.col("away_team").str.to_lowercase(),
         )
 
 
