@@ -130,6 +130,15 @@ def test_fetch_returns_one_row_per_snapshot_not_collapsed_across_snapshots(
     assert sorted(result["spread_line"].to_list()) == [pytest.approx(2.5), pytest.approx(7.5)]
 
 
+def test_fetch_uses_eastern_gameday_for_evening_kickoff(tmp_path: object) -> None:
+    # 2026-09-19T00:20:00Z is 2026-09-18 8:20pm ET -- a Thursday night game.
+    _write_snapshot(tmp_path, [_spread_row(event_start_time="2026-09-19T00:20:00Z")])
+
+    result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    assert result["gameday"][0] == "2026-09-18"
+
+
 def test_sharpapi_crosswalk_covers_every_canonical_team() -> None:
     from degenebet.data import access, teams
 

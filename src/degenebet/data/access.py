@@ -97,7 +97,17 @@ class SharpApiSource:
             pl.col("home_team").replace_strict(_SHARPAPI_TEAM_CROSSWALK),
             pl.col("away_team").replace_strict(_SHARPAPI_TEAM_CROSSWALK),
             (-pl.col("line")).alias("spread_line"),
-            pl.col("event_start_time").str.slice(0, 10).alias("gameday"),
+            # event_start_time is UTC; nflreadpy's gameday is the game's
+            # Eastern-local calendar date, so an evening kickoff (~20% of
+            # the weekly slate) needs the timezone conversion before
+            # slicing off the date, or it lands on the wrong gameday and
+            # silently misses the join in DataAccess.get_team_data.
+            pl.col("event_start_time")
+            .str.to_datetime(time_zone="UTC")
+            .dt.convert_time_zone("America/New_York")
+            .dt.date()
+            .cast(pl.Utf8)
+            .alias("gameday"),
         )
 
         in_range = home_spreads.filter(
