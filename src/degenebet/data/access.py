@@ -167,8 +167,7 @@ class DataAccess:
                 # to proceed with the original as_of_date, which naturally
                 # yields an empty/limited `current` contribution below.
                 warnings.warn(
-                    f"as_of_date {as_of_date} predates earliest cached history "
-                    f"{earliest}.",
+                    f"as_of_date {as_of_date} predates earliest cached history {earliest}.",
                     stacklevel=2,
                 )
 
