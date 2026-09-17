@@ -1,0 +1,35 @@
+name: Scheduled data fetch
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    env:
+      DEGENEBET_CACHE_DIR: ${{ github.workspace }}/cache
+      SHARPAPI_KEY: ${{ secrets.SHARPAPI_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout or create the data branch
+        run: git checkout data 2>/dev/null || git checkout -b data
+
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --extra dev
+
+      - run: uv run degenebet fetch schedules
+      - run: uv run degenebet fetch team-stats
+      - run: uv run degenebet fetch odds
+
+      - name: Commit and push fetched data
+        run: |
+          git config user.name "degenebet-bot"
+          git config user.email "degenebet-bot@users.noreply.github.com"
+          git add cache/
+          git diff --cached --quiet || git commit -m "chore: scheduled data fetch $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin data
