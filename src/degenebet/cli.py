@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from degenebet import data
+from degenebet.data import git_sync
 
 app = typer.Typer(no_args_is_help=True)
 fetch_app = typer.Typer(no_args_is_help=True)
@@ -61,3 +62,13 @@ def fetch_odds(
     books = frame["sportsbook"].n_unique()
     pulled_at = str(frame["pulled_at"].max())
     typer.echo(f"{frame.height} odds rows from {books} sportsbook(s), pulled at {pulled_at}")
+
+
+@app.command("sync")
+def sync_cache(
+    remote: str = typer.Option("origin", help="Git remote to fetch from"),
+    branch: str = typer.Option("data", help="Branch holding scheduled-fetch snapshots"),
+) -> None:
+    """Pull the latest scheduled-fetch snapshots from the data branch into the local cache."""
+    git_sync.sync_from_data_branch(remote=remote, branch=branch)
+    typer.echo(f"Synced local cache from {remote}/{branch}")

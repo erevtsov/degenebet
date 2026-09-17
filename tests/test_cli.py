@@ -108,3 +108,19 @@ def test_fetch_schedules_rejects_non_numeric_seasons() -> None:
 
     assert result.exit_code != 0
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_sync_command_calls_git_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake(*, remote: str, branch: str) -> None:
+        captured["remote"] = remote
+        captured["branch"] = branch
+
+    monkeypatch.setattr("degenebet.cli.git_sync.sync_from_data_branch", fake)
+
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 0
+    assert captured == {"remote": "origin", "branch": "data"}
+    assert "Synced local cache from origin/data" in result.stdout
