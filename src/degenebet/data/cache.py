@@ -82,3 +82,16 @@ def load_or_fetch(
     path.parent.mkdir(parents=True, exist_ok=True)
     fresh.write_parquet(path)
     return fresh
+
+
+def load_all_snapshots(source: str) -> pl.DataFrame:
+    """Return every retained snapshot for *source*, concatenated (each row
+    keeps its own ``pulled_at``). Empty (zero rows) if nothing's cached yet.
+    """
+    source_dir = _source_dir(source)
+    if not source_dir.exists():
+        return pl.DataFrame()
+    snapshots = sorted(source_dir.glob(f"{source}_*.parquet"))
+    if not snapshots:
+        return pl.DataFrame()
+    return pl.concat([pl.read_parquet(p) for p in snapshots], how="vertical")
