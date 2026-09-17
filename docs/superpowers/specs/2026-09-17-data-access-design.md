@@ -31,15 +31,29 @@ two sources never compete over team-stat rows; they compete over **schedule**
 rows (game_id, season, week, home_team, away_team, spread_line, result) —
 `nflreadpy` for completed games, SharpAPI for the ones it hasn't reached yet.
 
+**Verified against real data (2026 season, checked 2026-09-17), not
+assumed:** `nflreadpy.load_schedules()` already lists every future game
+(`game_id`/`home_team`/`away_team`/`week`) well before kickoff — of 256
+unplayed games, all had the schedule skeleton, but only the next week's 10
+games had `spread_line` populated (32 of 256 total). So `nflreadpy` and
+SharpAPI can both have a line for the *same* unplayed game near kickoff —
+this isn't a clean "historical has it or it doesn't" split, which changes
+the dedup rule below from what the first draft of this spec assumed.
+
 `DataAccess.get_team_data` therefore stitches at the schedule level:
 - `historical` (`NflverseSource`) supplies every game up to `as_of_date`
   that `nflreadpy` already has, `result`/`spread_line` included where known.
-- `current` (`SharpApiSource`) fills only the gap — upcoming games
-  `nflreadpy` doesn't have yet, with `result` null and `spread_line` from the
-  odds snapshot closest to (but not after) `as_of_date`.
-- Dedup is on `game_id`: `historical` always wins if both sources have the
-  same game, since a completed game's SharpAPI odds snapshot is stale
-  relative to the actual settled result.
+- `current` (`SharpApiSource`) supplies a `spread_line` for any game
+  `historical` hasn't settled yet, from the odds snapshot closest to (but
+  not after) `as_of_date`.
+- **Dedup is on `result`, not on `game_id` presence:** if `historical` has a
+  settled `result` for a `game_id`, its `spread_line` is authoritative (it's
+  the real closing line). If `result` is null — the game hasn't been played,
+  regardless of whether `historical` happens to already carry an early
+  `spread_line` for it — `current`'s line wins when SharpAPI has that game,
+  since SharpAPI exists specifically to be the fresher, more current number
+  to actually bet against; `historical`'s early line is only a fallback for
+  a game SharpAPI doesn't cover.
 
 Team-stat rows (`compute_rolling_features`'s input) stay a pure `nflreadpy`
 concern, unchanged from today's `features.py` — they're never stitched,
@@ -146,10 +160,13 @@ Per `AGENTS.md`'s testing rules — real in-memory Polars DataFrames, no
 network calls in the default test run:
 - As-of clamp-and-warn behavior (`as_of_date` before earliest cached
   history).
-- Dedup-on-`game_id` behavior (historical wins when both sources have the
-  same game).
-- "Current fills only the gap" behavior (current-source rows for games
-  `historical` already has are dropped, not merged).
+- Result-based dedup: `historical` wins for a `game_id` with a settled
+  `result`; `current` wins for a null-`result` `game_id` when SharpAPI has
+  that game — including the case where `historical` *also* has an early
+  `spread_line` for that same unplayed game, to guard against regressing
+  back to game_id-presence dedup.
+- `historical`-fallback behavior: a null-`result` game `current` doesn't
+  cover falls back to `historical`'s line rather than being dropped.
 - Merge-cache upsert behavior: a key in both old and new takes the new
   value; a key only in the old cache survives; a key only in the new fetch
   is added. This is the core correctness property this whole design exists
