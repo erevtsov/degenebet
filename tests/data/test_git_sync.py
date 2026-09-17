@@ -27,8 +27,14 @@ def test_sync_from_data_branch_runs_expected_git_commands(
     git_sync.sync_from_data_branch(remote="origin", branch="data")
 
     assert calls[0] == ["git", "fetch", "origin", "data"]
-    assert calls[1] == ["git", "archive", "--format=tar", "origin/data"]
-    assert calls[2] == ["tar", "-x", "-C", str(Path(str(tmp_path)))]
+    assert calls[1] == ["git", "archive", "--format=tar", "origin/data", "cache"]
+    assert calls[2] == [
+        "tar",
+        "-x",
+        "--strip-components=1",
+        "-C",
+        str(Path(str(tmp_path))),
+    ]
 
 
 def test_sync_from_data_branch_uses_custom_remote_and_branch(
@@ -45,4 +51,10 @@ def test_sync_from_data_branch_uses_custom_remote_and_branch(
     git_sync.sync_from_data_branch(remote="upstream", branch="scheduled-data")
 
     assert calls[0] == ["git", "fetch", "upstream", "scheduled-data"]
-    assert calls[1] == ["git", "archive", "--format=tar", "upstream/scheduled-data"]
+    assert calls[1] == [
+        "git",
+        "archive",
+        "--format=tar",
+        "upstream/scheduled-data",
+        "cache",
+    ]

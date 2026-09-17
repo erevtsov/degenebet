@@ -16,8 +16,10 @@ def sync_from_data_branch(*, remote: str = "origin", branch: str = "data") -> No
     dest = cache_dir()
     dest.mkdir(parents=True, exist_ok=True)
     archive = subprocess.run(
-        ["git", "archive", "--format=tar", f"{remote}/{branch}"],
+        ["git", "archive", "--format=tar", f"{remote}/{branch}", "cache"],
         check=True,
         capture_output=True,
     )
-    subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    subprocess.run(
+        ["tar", "-x", "--strip-components=1", "-C", str(dest)], input=archive.stdout, check=True
+    )
