@@ -5,6 +5,9 @@ on:
     - cron: "0 10 * * *"
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -13,23 +16,42 @@ jobs:
       SHARPAPI_KEY: ${{ secrets.SHARPAPI_KEY }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Checkout or create the data branch
-        run: git checkout data 2>/dev/null || git checkout -b data
 
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --extra dev
+
+      # Restore the previously-committed cache/ as the merge baseline before
+      # fetching -- a fresh runner's cache_dir() is otherwise empty every
+      # run, which would silently defeat nflverse_cache's merge/upsert
+      # shrinkage guard (Task 2/3) on every single scheduled run. Uses
+      # `degenebet sync` (git archive, not a branch checkout) so the fetch
+      # below still runs this checkout's (master's) own code.
+      - name: Restore existing cache from the data branch, if any
+        run: uv run degenebet sync || echo "No data branch yet -- starting fresh."
 
       - run: uv run degenebet fetch schedules
       - run: uv run degenebet fetch team-stats
       - run: uv run degenebet fetch odds
 
-      - name: Commit and push fetched data
+      - name: Publish fetched cache to the data branch
         run: |
           git config user.name "degenebet-bot"
           git config user.email "degenebet-bot@users.noreply.github.com"
-          git add cache/
+
+          git fetch origin data 2>/dev/null || true
+          worktree_dir="${RUNNER_TEMP:-/tmp}/data-branch-worktree"
+          if git show-ref --verify --quiet refs/remotes/origin/data; then
+            git worktree add "$worktree_dir" data
+          else
+            git worktree add --orphan -b data "$worktree_dir"
+          fi
+
+          rm -rf "$worktree_dir/cache"
+          mkdir -p "$worktree_dir/cache"
+          cp -r cache/merged "$worktree_dir/cache/" 2>/dev/null || true
+          cp -r cache/sharpapi "$worktree_dir/cache/" 2>/dev/null || true
+
+          cd "$worktree_dir"
+          git add cache/merged cache/sharpapi
           git diff --cached --quiet || git commit -m "chore: scheduled data fetch $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push origin data
