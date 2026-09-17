@@ -14,12 +14,13 @@ useful or required.
 
 from __future__ import annotations
 
+import warnings
 from datetime import date
 from typing import Protocol
 
 import polars as pl
 
-from degenebet.data import cache, teams
+from degenebet.data import cache, nflverse_cache, teams
 
 # SharpAPI's real full-name format, confirmed against live data 2026-09-17
 # (e.g. "Buffalo Bills", "Chicago Bears") -- not the abbreviated-city guess
@@ -103,4 +104,71 @@ class SharpApiSource:
 
         return in_range.group_by(["home_team", "away_team", "gameday"]).agg(
             pl.col("spread_line").median(), pl.col("pulled_at").max()
+        )
+
+
+class NflverseSource:
+    """Historical schedule source: reads the persisted merged schedules
+    store (nflverse_cache.py), never the network. nflreadpy's own team
+    codes are uppercase ("BUF") -- lowercased here to teams.CANONICAL_TEAMS'
+    convention, since this is the canonicalization boundary (raw cached
+    files keep the vendor's native format, same principle as
+    SharpApiSource)."""
+
+    def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
+        merged = nflverse_cache.read_merged("schedules")
+        if merged is None:
+            raise RuntimeError(
+                "No schedules have ever been synced -- run `degenebet fetch schedules` "
+                "or `degenebet sync` first."
+            )
+        return merged.filter(
+            (pl.col("gameday") >= start_date.isoformat())
+            & (pl.col("gameday") <= end_date.isoformat())
+        ).with_columns(
+            pl.col("home_team").str.to_lowercase(),
+            pl.col("away_team").str.to_lowercase(),
+        )
+
+
+class DataAccess:
+    """Stitches historical and current schedule sources into one
+    point-in-time-correct view. See
+    docs/superpowers/specs/2026-09-17-data-access-design.md."""
+
+    def __init__(self, historical: DataSource, current: DataSource) -> None:
+        self.historical = historical
+        self.current = current
+
+    def get_team_data(self, start_date: date, end_date: date, as_of_date: date) -> pl.DataFrame:
+        historical = self.historical.fetch(start_date, end_date)
+        current = self.current.fetch(start_date, end_date)
+
+        if historical.height > 0:
+            earliest = str(historical["gameday"].min())
+            if as_of_date.isoformat() < earliest:
+                warnings.warn(
+                    f"as_of_date {as_of_date} predates earliest cached history "
+                    f"{earliest}; clamping to {earliest}.",
+                    stacklevel=2,
+                )
+                as_of_date = date.fromisoformat(earliest)
+
+        current_asof = (
+            current.filter(pl.col("pulled_at").dt.date() <= as_of_date)
+            if current.height > 0
+            else current
+        )
+
+        unresolved = historical.filter(pl.col("result").is_null()).select(
+            "game_id", "home_team", "away_team", "gameday"
+        )
+        current_for_unresolved = current_asof.join(
+            unresolved, on=["home_team", "away_team", "gameday"], how="inner"
+        ).select("game_id", pl.col("spread_line").alias("current_spread_line"))
+
+        return (
+            historical.join(current_for_unresolved, on="game_id", how="left")
+            .with_columns(pl.coalesce(["current_spread_line", "spread_line"]).alias("spread_line"))
+            .drop("current_spread_line")
         )

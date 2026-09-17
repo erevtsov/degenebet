@@ -5,7 +5,8 @@ from datetime import UTC, date, datetime
 import polars as pl
 import pytest
 
-from degenebet.data.access import SharpApiSource
+from degenebet.data import nflverse_cache
+from degenebet.data.access import DataAccess, NflverseSource, SharpApiSource
 
 
 @pytest.fixture(autouse=True)
@@ -110,3 +111,162 @@ def test_sharpapi_crosswalk_covers_every_canonical_team() -> None:
     from degenebet.data import access, teams
 
     teams.assert_maps_to_canonical_teams(access._SHARPAPI_TEAM_CROSSWALK)  # does not raise
+
+
+def _schedule_row(**overrides: object) -> dict[str, object]:
+    """A DataSource.fetch() row already in canonical form (lowercase team
+    codes) -- used to build _FakeSource fixtures standing in for a
+    DataSource's output, not for raw merged-store content."""
+    row: dict[str, object] = {
+        "game_id": "2026_02_MIN_CHI",
+        "season": 2026,
+        "week": 2,
+        "gameday": "2026-09-20",
+        "home_team": "chi",
+        "away_team": "min",
+        "result": None,
+        "spread_line": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _raw_nflverse_schedule_row(**overrides: object) -> dict[str, object]:
+    """A row as nflreadpy actually returns it (uppercase team codes) --
+    used only to test NflverseSource's own raw-to-canonical transform."""
+    row: dict[str, object] = {
+        "game_id": "2026_02_MIN_CHI",
+        "season": 2026,
+        "week": 2,
+        "gameday": "2026-09-20",
+        "home_team": "CHI",
+        "away_team": "MIN",
+        "result": None,
+        "spread_line": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class _FakeSource:
+    def __init__(self, frame: pl.DataFrame) -> None:
+        self.frame = frame
+
+    def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
+        return self.frame
+
+
+def test_nflverse_source_reads_merged_store_filtered_to_range() -> None:
+    nflverse_cache.load_or_merge(
+        pl.DataFrame(
+            [
+                _raw_nflverse_schedule_row(gameday="2026-09-06"),
+                _raw_nflverse_schedule_row(gameday="2026-10-06"),
+            ]
+        ),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+
+    result = NflverseSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    assert result.height == 1
+    assert result["gameday"][0] == "2026-09-06"
+
+
+def test_nflverse_source_lowercases_team_codes() -> None:
+    nflverse_cache.load_or_merge(
+        pl.DataFrame([_raw_nflverse_schedule_row()]),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+
+    result = NflverseSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    assert result["home_team"][0] == "chi"
+    assert result["away_team"][0] == "min"
+
+
+def test_get_team_data_prefers_current_for_unplayed_game_even_with_stale_historical_line() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=1.0)]))
+    current = _FakeSource(
+        pl.DataFrame(
+            {
+                "home_team": ["chi"],
+                "away_team": ["min"],
+                "gameday": ["2026-09-20"],
+                "spread_line": [2.5],
+                "pulled_at": [datetime(2026, 9, 17, tzinfo=UTC)],
+            }
+        )
+    )
+
+    result = DataAccess(historical, current).get_team_data(
+        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 17)
+    )
+
+    assert result["spread_line"][0] == pytest.approx(2.5)
+
+
+def test_get_team_data_historical_wins_for_settled_result() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=7, spread_line=1.0)]))
+    current = _FakeSource(
+        pl.DataFrame(
+            {
+                "home_team": ["chi"],
+                "away_team": ["min"],
+                "gameday": ["2026-09-20"],
+                "spread_line": [2.5],
+                "pulled_at": [datetime(2026, 9, 17, tzinfo=UTC)],
+            }
+        )
+    )
+
+    result = DataAccess(historical, current).get_team_data(
+        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 17)
+    )
+
+    assert result["spread_line"][0] == pytest.approx(1.0)
+
+
+def test_get_team_data_falls_back_to_historical_when_current_missing_game() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=1.0)]))
+    current = _FakeSource(
+        pl.DataFrame(
+            schema={
+                "home_team": pl.Utf8,
+                "away_team": pl.Utf8,
+                "gameday": pl.Utf8,
+                "spread_line": pl.Float64,
+                "pulled_at": pl.Datetime(time_zone="UTC"),
+            }
+        )
+    )
+
+    result = DataAccess(historical, current).get_team_data(
+        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 17)
+    )
+
+    assert result["spread_line"][0] == pytest.approx(1.0)
+
+
+def test_get_team_data_warns_and_clamps_as_of_before_earliest_history() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(gameday="2026-09-06")]))
+    current = _FakeSource(
+        pl.DataFrame(
+            schema={
+                "home_team": pl.Utf8,
+                "away_team": pl.Utf8,
+                "gameday": pl.Utf8,
+                "spread_line": pl.Float64,
+                "pulled_at": pl.Datetime(time_zone="UTC"),
+            }
+        )
+    )
+
+    with pytest.warns(UserWarning, match="predates earliest cached history"):
+        DataAccess(historical, current).get_team_data(
+            date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2020, 1, 1)
+        )
