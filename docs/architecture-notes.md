@@ -5,6 +5,185 @@ Running scratchpad from an ongoing brainstorming session, derived from
 so nothing gets lost mid-conversation. Will be superseded by a proper spec
 (or specs, if this decomposes into sub-projects) once the design settles.
 
+## Pseudocode sketch (current)
+
+Reflects every decision below — not the original draft. `...` marks an
+unimplemented body; this is a shape to argue about, not working code.
+
+```python
+# ============================================================
+# DATA
+# ============================================================
+
+class DataSource(Protocol):
+    def fetch(self, start_date: date, end_date: date) -> pl.DataFrame: ...
+
+class NflverseSource:   # wraps existing degenebet.data.nflverse
+    def fetch(self, start_date, end_date) -> pl.DataFrame: ...
+
+class SharpApiSource:   # wraps existing degenebet.data.providers.sharpapi
+    def fetch(self, start_date, end_date) -> pl.DataFrame: ...
+
+class DataAccess:
+    def __init__(self, historical: DataSource, current: DataSource): ...
+
+    def get_team_data(
+        self, start_date: date, end_date: date, as_of_date: date
+    ) -> pl.DataFrame:
+        """Data as it would have been known as of as_of_date.
+        - as_of_date before earliest cached history -> warn, clamp to earliest.
+        - historical rows from `historical`, capped at as_of_date.
+        - gap between historical's latest observation and as_of_date filled
+          from `current`, deduplicated on game_id so the two never overlap.
+        """
+        ...
+    # get_player_data(...) later, same shape — hence "get_team_data" not
+    # a generic "get_data".
+
+
+# ============================================================
+# FEATURES — no FeaturePipeline. features.py stays free functions:
+#   compute_rolling_features(team_stats, *, window, min_history) -> pl.DataFrame
+#   build_model_table(schedules, rolling_features) -> pl.DataFrame
+# A future column-transform need (scaling, encoding) goes through
+# sklearn's own Pipeline/StandardScaler, injected as SpreadModel's
+# `model`, no wrapper class of our own.
+# ============================================================
+
+
+# ============================================================
+# MODEL
+# ============================================================
+
+@dataclass(frozen=True)
+class TrainingResult:
+    """plan.md: 'weights, residuals, etc' — everything needed to evaluate
+    a fit."""
+    predictions: pl.DataFrame
+    residuals: pl.DataFrame | None
+    weights: dict[str, float] | None
+    metadata: dict[str, Any]          # model class, fit timestamp, hyperparams
+
+class Model(Protocol):
+    def fit(self, train_data: pl.DataFrame) -> TrainingResult: ...
+    def predict(self, data: pl.DataFrame) -> pl.DataFrame: ...
+
+class SpreadModel:
+    """NOT LinearSpreadModel — already composable via RegressorProtocol
+    injection; naming it by algorithm would conflate task with algorithm."""
+    def __init__(self, model: RegressorProtocol | None = None): ...
+    def fit(self, train_data: pl.DataFrame) -> TrainingResult: ...
+    def predict(self, data: pl.DataFrame) -> pl.DataFrame: ...
+
+class EnsembleModel:   # not built yet — plan.md's ensembling ask
+    def __init__(
+        self, models: list[Model], combine: Callable[[list[pl.DataFrame]], pl.DataFrame]
+    ): ...
+    def fit(self, train_data) -> TrainingResult: ...
+    def predict(self, data) -> pl.DataFrame: ...
+
+
+# ============================================================
+# SPLIT STRATEGY
+# ============================================================
+
+class SplitStrategy(Protocol):
+    def splits(self, data: pl.DataFrame) -> Iterator[tuple[pl.DataFrame, pl.DataFrame]]: ...
+
+class SingleSplit(SplitStrategy):
+    """One (train, test) pair by season list. Fast; used for
+    architecture/feature/hyperparameter screening."""
+    def __init__(self, train_seasons: list[int], test_seasons: list[int]): ...
+
+class WalkForwardSplit(SplitStrategy):
+    """One (train, test) pair per week after warmup_seasons, expanding
+    window. Validation today; the same loop IS production later — the
+    final fold, predicting a week with no known result yet, is exactly
+    'generate this week's picks.'"""
+    def __init__(self, warmup_seasons: int = 1): ...
+
+
+# ============================================================
+# SHARED FOLD ORCHESTRATION — the only place model_factory is used.
+# Neither Efficacy nor Backtest owns fitting or fold-looping.
+# ============================================================
+
+def iterate_folds(
+    data: pl.DataFrame,
+    split_strategy: SplitStrategy,
+    model_factory: Callable[[], Model],
+) -> Iterator[tuple[TrainingResult, pl.DataFrame]]:
+    for train, test in split_strategy.splits(data):
+        model = model_factory()
+        training_result = model.fit(train)
+        yield training_result, model.predict(test)
+
+
+# ============================================================
+# EFFICACY — pure scorer. predicted_result vs. result only; spread_line
+# never enters this layer.
+# ============================================================
+
+@dataclass(frozen=True)
+class EfficacyResult:
+    metrics: dict[str, float]      # e.g. rmse, r_squared, directional_accuracy, information_coefficient
+    by_fold: pl.DataFrame | None   # walk-forward efficiency: in-sample vs out-of-sample per fold
+
+class Efficacy:
+    def evaluate(self, training_result: TrainingResult, actual: pl.DataFrame) -> EfficacyResult:
+        """Pure — no fitting, no fold-looping. Scores what one fold
+        already produced: training_result.predictions vs actual['result']."""
+        ...
+
+    def evaluate_folds(self, folds: Iterable[tuple[TrainingResult, pl.DataFrame]]) -> EfficacyResult:
+        """Runs evaluate() per fold from iterate_folds(...), aggregates.
+        Does NOT iterate over candidate model configs itself — that loop
+        is human-driven, above this class (see Workflow below)."""
+        ...
+
+
+# ============================================================
+# BACKTEST — pure scorer, market-aware (spread_line), sizing-aware.
+# Same run()/run_folds() shape as Efficacy's evaluate()/evaluate_folds().
+# ============================================================
+
+class SizingStrategy(Protocol):
+    def size(self, predicted: pl.DataFrame) -> pl.DataFrame:
+        """Input includes `edge` (predicted_result - spread_line) and
+        `side`, so confidence-based sizing (larger |edge| -> larger bet)
+        is possible once implemented. Adds a `units` column."""
+        ...
+
+class FlatSizing(SizingStrategy):
+    """Today's implicit 1-unit-per-bet, made explicit. Ignores edge."""
+    def size(self, predicted: pl.DataFrame) -> pl.DataFrame: ...
+
+@dataclass(frozen=True)
+class BacktestResult:
+    bets: pl.DataFrame
+    bets_placed: int
+    win_rate: float
+    units_won: float
+    roi_pct: float
+    by_fold: pl.DataFrame | None
+
+class Backtest:
+    def __init__(self, sizing_strategy: SizingStrategy, edge_threshold: float = 1.0): ...
+
+    def run(self, training_result: TrainingResult, test_data: pl.DataFrame) -> BacktestResult:
+        """Pure, single-fold, deterministic — no fitting. Computes
+        edge = predicted_result - spread_line, decides side, sizes via
+        sizing_strategy (which sees edge), scores win/loss/push at -110."""
+        ...
+
+    def run_folds(self, folds: Iterable[tuple[TrainingResult, pl.DataFrame]]) -> BacktestResult:
+        """Calls run() once per fold, concatenates each fold's `bets`,
+        and RECOMPUTES pooled stats from the concatenated raw bets —
+        never by averaging each fold's already-computed win_rate/roi_pct
+        (that would mis-weight folds with different bet counts)."""
+        ...
+```
+
 ## Settled
 
 **DataAccess** (renamed from an earlier `PointInTimeDataAccess` draft):
