@@ -753,9 +753,116 @@ Cannot be exercised in this plan's own test suite. Once merged and the `SHARPAPI
 
 ---
 
-### Task 6: `SharpApiSource` — team crosswalk, sign conversion, per-game consensus
+### Task 6: Canonical team codes (`teams.py`)
 
-Transforms SharpAPI's raw long-format odds rows (one row per sportsbook per selection per market) into a clean one-row-per-game frame with a `spread_line` in the same sign convention as `nflreadpy`'s (positive = home favored). Confirmed against real API data on 2026-09-17: team names are full "City Mascot" strings ("Buffalo Bills"), and the home selection's `line` is negative when home is favored (opposite of our convention) — `spread_line = -line`. Multiple sportsbooks report different lines for the same game; this takes the **median** main-line home spread across books as the per-game consensus.
+Every vendor `DataAccess` stitches together will have its own column names and identifiers — we already hit this concretely with SharpAPI's full "City Mascot" team names vs. `nflreadpy`'s 2-3 letter codes. Rather than bury a one-off crosswalk inside `SharpApiSource` with no shared reference point, extract the canonical team-code set into its own module now, so it's a single source of truth any future vendor's crosswalk maps onto, and so a vendor crosswalk's completeness/correctness can be validated generically instead of relying on that vendor's own tests to happen to exercise every team.
+
+**Files:**
+- Create: `src/degenebet/data/teams.py`
+- Test: `tests/data/test_teams.py`
+
+**Interfaces:**
+- Produces: `CANONICAL_TEAMS: frozenset[str]` (the 32 `nflreadpy` team abbreviations), `assert_maps_to_canonical_teams(crosswalk: dict[str, str]) -> None`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/data/test_teams.py
+from __future__ import annotations
+
+import pytest
+
+from degenebet.data import teams
+
+
+def test_canonical_teams_has_32_teams() -> None:
+    assert len(teams.CANONICAL_TEAMS) == 32
+
+
+def test_assert_maps_to_canonical_teams_passes_for_complete_crosswalk() -> None:
+    crosswalk = {f"Vendor Name {i}": code for i, code in enumerate(teams.CANONICAL_TEAMS)}
+
+    teams.assert_maps_to_canonical_teams(crosswalk)  # does not raise
+
+
+def test_assert_maps_to_canonical_teams_raises_on_missing_team() -> None:
+    incomplete = {code: code for code in list(teams.CANONICAL_TEAMS)[:-1]}
+
+    with pytest.raises(ValueError, match="missing"):
+        teams.assert_maps_to_canonical_teams(incomplete)
+
+
+def test_assert_maps_to_canonical_teams_raises_on_unknown_code() -> None:
+    crosswalk = {code: code for code in teams.CANONICAL_TEAMS}
+    crosswalk["Extra Team"] = "XXX"
+
+    with pytest.raises(ValueError, match="unknown"):
+        teams.assert_maps_to_canonical_teams(crosswalk)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/data/test_teams.py -v`
+Expected: FAIL (`ModuleNotFoundError`).
+
+- [ ] **Step 3: Implement `teams.py`**
+
+```python
+"""Canonical NFL team identifiers every vendor's data gets translated into.
+
+nflreadpy's own abbreviations are the canonical set: nflverse is this
+project's primary/authoritative source (schedules, team stats), so any
+other vendor's team identifiers (e.g. SharpAPI's "Buffalo Bills" full
+names) have to line up with these codes for DataAccess to join across
+sources at all. See DataSource's docstring in access.py for the full
+cross-vendor join contract this is one piece of.
+"""
+
+from __future__ import annotations
+
+CANONICAL_TEAMS: frozenset[str] = frozenset(
+    {
+        "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN",
+        "DET", "GB", "HOU", "IND", "JAX", "KC", "LA", "LAC", "LV", "MIA",
+        "MIN", "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SF", "SEA", "TB",
+        "TEN", "WAS",
+    }
+)
+
+
+def assert_maps_to_canonical_teams(crosswalk: dict[str, str]) -> None:
+    """Raise ValueError if `crosswalk`'s values don't exactly cover
+    CANONICAL_TEAMS -- catches a typo'd code, a missing team, or an
+    unrecognized code in a vendor's crosswalk generically."""
+    mapped = set(crosswalk.values())
+    missing = CANONICAL_TEAMS - mapped
+    unknown = mapped - CANONICAL_TEAMS
+    if missing or unknown:
+        raise ValueError(
+            f"Crosswalk doesn't map exactly onto CANONICAL_TEAMS -- "
+            f"missing: {sorted(missing)}, unknown: {sorted(unknown)}"
+        )
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/data/test_teams.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Lint, type-check, commit**
+
+Run: `just check`
+
+```bash
+git add src/degenebet/data/teams.py tests/data/test_teams.py
+git commit -m "feat: add canonical team-code registry for cross-vendor joins"
+```
+
+---
+
+### Task 7: `SharpApiSource` — team crosswalk, sign conversion, per-game consensus
+
+Transforms SharpAPI's raw long-format odds rows (one row per sportsbook per selection per market) into a clean one-row-per-game frame with a `spread_line` in the same sign convention as `nflreadpy`'s (positive = home favored). Confirmed against real API data on 2026-09-17: team names are full "City Mascot" strings ("Buffalo Bills"), and the home selection's `line` is negative when home is favored (opposite of our convention) — `spread_line = -line`. Multiple sportsbooks report different lines for the same game; this takes the **median** main-line home spread across books as the per-game consensus. The team crosswalk targets `teams.CANONICAL_TEAMS` (Task 6) and is validated against it, rather than being a self-contained dict with no shared reference point.
 
 **Files:**
 - Create: `src/degenebet/data/access.py`
@@ -764,8 +871,10 @@ Transforms SharpAPI's raw long-format odds rows (one row per sportsbook per sele
 - Test: `tests/data/test_cache.py` (append)
 
 **Interfaces:**
-- Consumes: `cache.load_all_snapshots(source: str) -> pl.DataFrame` (this task, added to `cache.py`).
+- Consumes: `cache.load_all_snapshots(source: str) -> pl.DataFrame` (this task, added to `cache.py`); `teams.CANONICAL_TEAMS`, `teams.assert_maps_to_canonical_teams` (Task 6).
 - Produces: `DataSource` protocol (`fetch(self, start_date: date, end_date: date) -> pl.DataFrame`), `SharpApiSource` implementing it, returning columns `home_team, away_team, gameday, spread_line, pulled_at` (nflverse team abbreviations, ISO date strings, our sign convention).
+
+**Cross-vendor join contract:** every `DataSource` implementation (this one, `NflverseSource` in Task 8, and any future vendor) must return `home_team`/`away_team` as codes from `teams.CANONICAL_TEAMS`, `gameday` as an ISO 8601 date string (`YYYY-MM-DD`), and `spread_line` (where present) in the positive-means-home-favored convention. These three are the actual join/comparison surface `DataAccess` relies on to stitch sources together — the rest of each source's columns can differ (a historical source and an odds source are fundamentally different shapes, and forcing full column parity between them isn't useful). This goes in `access.py`'s module docstring so it's visible next to the `DataSource` protocol itself, not just in this plan.
 
 - [ ] **Step 1: Write the failing test for `cache.load_all_snapshots`**
 
@@ -920,6 +1029,12 @@ def test_fetch_returns_empty_frame_when_nothing_cached() -> None:
     result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
 
     assert result.height == 0
+
+
+def test_sharpapi_crosswalk_covers_every_canonical_team() -> None:
+    from degenebet.data import access, teams
+
+    teams.assert_maps_to_canonical_teams(access._SHARPAPI_TEAM_CROSSWALK)  # does not raise
 ```
 
 - [ ] **Step 4: Run tests to verify they fail**
@@ -927,12 +1042,21 @@ def test_fetch_returns_empty_frame_when_nothing_cached() -> None:
 Run: `uv run pytest tests/data/test_access.py -v`
 Expected: FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 5: Implement `access.py` (`DataSource` protocol + `SharpApiSource` only — `NflverseSource`/`DataAccess` are Task 7)**
+- [ ] **Step 5: Implement `access.py` (`DataSource` protocol + `SharpApiSource` only — `NflverseSource`/`DataAccess` are Task 8)**
 
 ```python
 """DataAccess: point-in-time stitching of historical (nflreadpy) and current
 (SharpAPI) schedule data. See
 docs/superpowers/specs/2026-09-17-data-access-design.md.
+
+Cross-vendor join contract: every DataSource implementation must return
+`home_team`/`away_team` as codes from `teams.CANONICAL_TEAMS`, `gameday` as
+an ISO 8601 date string (YYYY-MM-DD), and `spread_line` (where present) with
+positive meaning home favored. These three are the actual join/comparison
+surface DataAccess relies on to stitch sources together -- the rest of each
+source's columns can differ; a historical source and an odds source are
+fundamentally different shapes, and full column parity between them isn't
+useful or required.
 """
 
 from __future__ import annotations
@@ -942,12 +1066,14 @@ from typing import Protocol
 
 import polars as pl
 
-from degenebet.data import cache
+from degenebet.data import cache, teams
 
 # SharpAPI's real full-name format, confirmed against live data 2026-09-17
 # (e.g. "Buffalo Bills", "Chicago Bears") -- not the abbreviated-city guess
 # in the provider's own test fixtures, which was never verified live.
-_TEAM_NAME_TO_ABBR: dict[str, str] = {
+# Validated against teams.CANONICAL_TEAMS below, not just by this module's
+# own tests happening to exercise every team.
+_SHARPAPI_TEAM_CROSSWALK: dict[str, str] = {
     "Arizona Cardinals": "ARI",
     "Atlanta Falcons": "ATL",
     "Baltimore Ravens": "BAL",
@@ -982,6 +1108,8 @@ _TEAM_NAME_TO_ABBR: dict[str, str] = {
     "Washington Commanders": "WAS",
 }
 
+teams.assert_maps_to_canonical_teams(_SHARPAPI_TEAM_CROSSWALK)
+
 
 class DataSource(Protocol):
     def fetch(self, start_date: date, end_date: date) -> pl.DataFrame: ...
@@ -1009,8 +1137,8 @@ class SharpApiSource:
         home_spreads = raw.filter(
             (pl.col("market_type") == "spread") & (pl.col("selection_type") == "home")
         ).with_columns(
-            pl.col("home_team").replace_strict(_TEAM_NAME_TO_ABBR),
-            pl.col("away_team").replace_strict(_TEAM_NAME_TO_ABBR),
+            pl.col("home_team").replace_strict(_SHARPAPI_TEAM_CROSSWALK),
+            pl.col("away_team").replace_strict(_SHARPAPI_TEAM_CROSSWALK),
             (-pl.col("line")).alias("spread_line"),
             pl.col("event_start_time").str.slice(0, 10).alias("gameday"),
         )
@@ -1041,16 +1169,16 @@ git commit -m "feat: add SharpApiSource with team crosswalk and sign conversion"
 
 ---
 
-### Task 7: `NflverseSource` + `DataAccess.get_team_data`
+### Task 8: `NflverseSource` + `DataAccess.get_team_data`
 
-Completes `access.py`: `NflverseSource` reads the merged historical store (Task 2/3), and `DataAccess.get_team_data` stitches it with `SharpApiSource` (Task 6) using result-based dedup — `historical` wins for any `game_id` with a settled `result`; `current` wins for an unplayed game whenever SharpAPI covers it (even if `historical` already has an early line for it); `historical`'s own line is the fallback when `current` doesn't cover that game. Includes the as-of clamp-and-warn behavior.
+Completes `access.py`: `NflverseSource` reads the merged historical store (Task 2/3), and `DataAccess.get_team_data` stitches it with `SharpApiSource` (Task 7) using result-based dedup — `historical` wins for any `game_id` with a settled `result`; `current` wins for an unplayed game whenever SharpAPI covers it (even if `historical` already has an early line for it); `historical`'s own line is the fallback when `current` doesn't cover that game. Includes the as-of clamp-and-warn behavior.
 
 **Files:**
 - Modify: `src/degenebet/data/access.py`
 - Test: `tests/data/test_access.py` (append)
 
 **Interfaces:**
-- Consumes: `nflverse_cache.read_merged` (Task 2), `SharpApiSource`/`DataSource` (Task 6).
+- Consumes: `nflverse_cache.read_merged` (Task 2), `SharpApiSource`/`DataSource` (Task 7).
 - Produces: `NflverseSource` (implements `DataSource`), `DataAccess.__init__(self, historical: DataSource, current: DataSource)`, `DataAccess.get_team_data(self, start_date: date, end_date: date, as_of_date: date) -> pl.DataFrame`.
 
 - [ ] **Step 1: Write the failing tests**
