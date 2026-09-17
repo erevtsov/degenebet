@@ -16,6 +16,7 @@ from pathlib import Path
 import polars as pl
 
 from degenebet.config import cache_dir
+from degenebet.data import nflverse
 
 _MERGED_DIRNAME = "merged"
 
@@ -79,3 +80,17 @@ def load_or_merge(
     path.parent.mkdir(parents=True, exist_ok=True)
     merged.write_parquet(path)
     return merged
+
+
+def sync_schedules(seasons: list[int] | None = None) -> pl.DataFrame:
+    """Fetch schedules from nflreadpy and merge into the persisted store."""
+    fresh = nflverse.load_schedules(seasons)
+    return load_or_merge(fresh, name="schedules", key_columns=["game_id"], group_column="season")
+
+
+def sync_team_stats(seasons: list[int] | None = None) -> pl.DataFrame:
+    """Fetch team stats from nflreadpy and merge into the persisted store."""
+    fresh = nflverse.load_team_stats(seasons)
+    return load_or_merge(
+        fresh, name="team_stats", key_columns=["game_id", "team"], group_column="season"
+    )

@@ -107,3 +107,27 @@ def test_load_or_merge_allows_growth() -> None:
     )
 
     assert result.height == 2
+
+
+def test_sync_schedules_fetches_and_merges(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetched = pl.DataFrame({"game_id": ["a"], "season": [2024], "result": [10]})
+    monkeypatch.setattr(
+        "degenebet.data.nflverse_cache.nflverse.load_schedules", lambda seasons: fetched
+    )
+
+    result = nflverse_cache.sync_schedules(seasons=[2024])
+
+    assert result.equals(fetched)
+    assert nflverse_cache.read_merged("schedules").equals(fetched)
+
+
+def test_sync_team_stats_fetches_and_merges(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetched = pl.DataFrame({"game_id": ["a"], "team": ["BUF"], "season": [2024]})
+    monkeypatch.setattr(
+        "degenebet.data.nflverse_cache.nflverse.load_team_stats", lambda seasons: fetched
+    )
+
+    result = nflverse_cache.sync_team_stats(seasons=[2024])
+
+    assert result.equals(fetched)
+    assert nflverse_cache.read_merged("team_stats").equals(fetched)

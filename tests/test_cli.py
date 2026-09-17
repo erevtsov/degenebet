@@ -13,7 +13,7 @@ runner = CliRunner()
 
 def test_fetch_schedules_reports_row_count(monkeypatch: pytest.MonkeyPatch) -> None:
     frame = pl.DataFrame({"season": [2023, 2024]})
-    monkeypatch.setattr("degenebet.cli.data.load_schedules", lambda seasons: frame)
+    monkeypatch.setattr("degenebet.cli.data.sync_schedules", lambda seasons: frame)
 
     result = runner.invoke(app, ["fetch", "schedules"])
 
@@ -28,7 +28,7 @@ def test_fetch_schedules_parses_seasons_option(monkeypatch: pytest.MonkeyPatch) 
         captured["seasons"] = seasons
         return pl.DataFrame({"season": [2022]})
 
-    monkeypatch.setattr("degenebet.cli.data.load_schedules", fake)
+    monkeypatch.setattr("degenebet.cli.data.sync_schedules", fake)
 
     result = runner.invoke(app, ["fetch", "schedules", "--seasons", "2021,2022"])
 
@@ -48,7 +48,7 @@ def test_fetch_player_stats_reports_row_count(monkeypatch: pytest.MonkeyPatch) -
 
 def test_fetch_team_stats_reports_row_count(monkeypatch: pytest.MonkeyPatch) -> None:
     frame = pl.DataFrame({"season": [2024]})
-    monkeypatch.setattr("degenebet.cli.data.load_team_stats", lambda seasons: frame)
+    monkeypatch.setattr("degenebet.cli.data.sync_team_stats", lambda seasons: frame)
 
     result = runner.invoke(app, ["fetch", "team-stats"])
 

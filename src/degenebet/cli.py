@@ -27,7 +27,7 @@ _SEASONS_OPTION = typer.Option(None, help="Comma-separated seasons, e.g. 2022,20
 @fetch_app.command("schedules")
 def fetch_schedules(seasons: str | None = _SEASONS_OPTION) -> None:
     """Load NFL schedules/games (including historical closing lines)."""
-    frame = data.load_schedules(_parse_seasons(seasons))
+    frame = data.sync_schedules(_parse_seasons(seasons))
     typer.echo(f"{frame.height} games loaded")
 
 
@@ -41,7 +41,7 @@ def fetch_player_stats(seasons: str | None = _SEASONS_OPTION) -> None:
 @fetch_app.command("team-stats")
 def fetch_team_stats(seasons: str | None = _SEASONS_OPTION) -> None:
     """Load weekly team stats."""
-    frame = data.load_team_stats(_parse_seasons(seasons))
+    frame = data.sync_team_stats(_parse_seasons(seasons))
     typer.echo(f"{frame.height} rows loaded")
 
 
