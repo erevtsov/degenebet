@@ -5,12 +5,15 @@ See docs/superpowers/specs/2026-09-18-modeling-efficacy-foundation-design.md.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
+
+from degenebet.modeling.splits import FoldPredictions
 
 
 @dataclass(frozen=True)
@@ -61,3 +64,32 @@ class Efficacy:
         has no fold concept, so there's nothing to build a breakdown
         from."""
         return EfficacyResult(metrics=_compute_metrics(predictions), by_fold=None)
+
+    def evaluate_folds(self, folds: Iterable[FoldPredictions]) -> EfficacyResult:
+        """Consumes iterate_folds's FoldPredictions stream. by_fold is long
+        format: one row per (fold, sample) pair. metrics is computed by
+        concatenating every fold's out_of_sample frame and scoring once --
+        never by averaging each fold's already-computed metrics, so an
+        uneven fold size (e.g. from a future WalkForwardSplit) doesn't
+        mis-weight the result."""
+        materialized = list(folds)
+        if not materialized:
+            raise ValueError("Cannot evaluate an empty folds stream.")
+
+        by_fold_rows: list[dict[str, float | int | str]] = []
+        out_of_sample_frames: list[pl.DataFrame] = []
+        for fold_index, fold in enumerate(materialized):
+            by_fold_rows.append(
+                {"fold": fold_index, "sample": "in_sample", **_compute_metrics(fold.in_sample)}
+            )
+            by_fold_rows.append(
+                {
+                    "fold": fold_index,
+                    "sample": "out_of_sample",
+                    **_compute_metrics(fold.out_of_sample),
+                }
+            )
+            out_of_sample_frames.append(fold.out_of_sample)
+
+        pooled = pl.concat(out_of_sample_frames, how="vertical")
+        return EfficacyResult(metrics=_compute_metrics(pooled), by_fold=pl.DataFrame(by_fold_rows))
