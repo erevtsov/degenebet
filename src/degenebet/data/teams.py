@@ -4,12 +4,14 @@ nflreadpy's own abbreviations are the canonical set: nflverse is this
 project's primary/authoritative source (schedules, team stats), so any
 other vendor's team identifiers (e.g. SharpAPI's "Buffalo Bills" full
 names) have to line up with these codes for DataAccess to join across
-sources at all. See DataSource's docstring in access.py for the full
-cross-vendor join contract this is one piece of.
+sources at all. See access.py's module docstring for the full
+cross-vendor join contract (HistoricalDataSource/CurrentDataSource) this
+is one piece of.
 
 Codes are lowercase (nflreadpy's own raw data is uppercase, e.g. "BUF") --
 this project's naming convention is lower_snake_case throughout, so
-NflverseSource.fetch() lowercases at the read boundary rather than the
+normalization happens once, at the merge-cache write boundary
+(nflverse_cache.sync_schedules/sync_team_stats), rather than the
 canonical set matching the vendor's casing.
 """
 

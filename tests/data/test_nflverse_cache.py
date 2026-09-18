@@ -109,25 +109,69 @@ def test_load_or_merge_allows_growth() -> None:
     assert result.height == 2
 
 
-def test_sync_schedules_fetches_and_merges(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetched = pl.DataFrame({"game_id": ["a"], "season": [2024], "result": [10]})
+def test_load_or_merge_raises_clear_error_when_existing_store_predates_schema_change() -> None:
+    existing = pl.DataFrame({"game_id": ["a"], "season": [2024], "result": [10]})
+    nflverse_cache.load_or_merge(
+        existing, name="schedules", key_columns=["game_id"], group_column="season"
+    )
+    new = pl.DataFrame({"game_id": ["b"], "season": [2024], "result": [20], "gameweek": [202401]})
+
+    with pytest.raises(ValueError, match="gameweek"):
+        nflverse_cache.load_or_merge(
+            new, name="schedules", key_columns=["game_id"], group_column="season"
+        )
+
+
+def test_sync_schedules_normalizes_team_codes_and_adds_gameweek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched = pl.DataFrame(
+        {
+            "game_id": ["a"],
+            "season": [2024],
+            "week": [3],
+            "home_team": ["BUF"],
+            "away_team": ["KC"],
+            "result": [10],
+        }
+    )
     monkeypatch.setattr(
         "degenebet.data.nflverse_cache.nflverse.load_schedules", lambda seasons: fetched
     )
 
     result = nflverse_cache.sync_schedules(seasons=[2024])
 
-    assert result.equals(fetched)
-    assert nflverse_cache.read_merged("schedules").equals(fetched)
+    assert result["home_team"].to_list() == ["buf"]
+    assert result["away_team"].to_list() == ["kc"]
+    assert result["gameweek"].to_list() == [202403]
+    stored = nflverse_cache.read_merged("schedules")
+    assert stored is not None
+    assert stored["home_team"].to_list() == ["buf"]
+    assert stored["gameweek"].to_list() == [202403]
 
 
-def test_sync_team_stats_fetches_and_merges(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetched = pl.DataFrame({"game_id": ["a"], "team": ["BUF"], "season": [2024]})
+def test_sync_team_stats_normalizes_team_codes_and_adds_gameweek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched = pl.DataFrame(
+        {
+            "game_id": ["a"],
+            "team": ["BUF"],
+            "opponent_team": ["KC"],
+            "season": [2024],
+            "week": [3],
+        }
+    )
     monkeypatch.setattr(
         "degenebet.data.nflverse_cache.nflverse.load_team_stats", lambda seasons: fetched
     )
 
     result = nflverse_cache.sync_team_stats(seasons=[2024])
 
-    assert result.equals(fetched)
-    assert nflverse_cache.read_merged("team_stats").equals(fetched)
+    assert result["team"].to_list() == ["buf"]
+    assert result["opponent_team"].to_list() == ["kc"]
+    assert result["gameweek"].to_list() == [202403]
+    stored = nflverse_cache.read_merged("team_stats")
+    assert stored is not None
+    assert stored["team"].to_list() == ["buf"]
+    assert stored["gameweek"].to_list() == [202403]
