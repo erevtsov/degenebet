@@ -30,7 +30,7 @@ input column requirements change):
     ]
     schedules_cols = [
         "game_id", "season", "week", "home_team", "away_team",
-        "result", "spread_line",
+        "result", "spread_line", "home_spread_odds", "away_spread_odds",
     ]
 
     (
@@ -53,8 +53,10 @@ from pathlib import Path
 import polars as pl
 
 from degenebet.data.access import _widen_with_team_data
-from degenebet.modeling.backtest import run_backtest
+from degenebet.modeling.backtest import Backtest, FlatSizing
 from degenebet.modeling.features import compute_rolling_features
+from degenebet.modeling.splits import SingleSplit, iterate_folds
+from degenebet.modeling.spread_model import SpreadModel
 
 _FIXTURES_DIR = Path(__file__).parent / "_fixtures"
 
@@ -86,7 +88,10 @@ def test_backtest_ats_win_rate_is_plausible_against_real_data() -> None:
         ]
     )
 
-    result = run_backtest(model_table, train_seasons=[2022, 2023], test_seasons=[2024])
+    split_strategy = SingleSplit(train_seasons=[2022, 2023], test_seasons=[2024])
+    folds = list(iterate_folds(model_table, split_strategy, SpreadModel))
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+    result = backtest.run(folds[0].out_of_sample)
 
     assert result.bets_placed > 50, "too few bets placed to be a meaningful sanity check"
     assert 0.35 <= result.ats_win_rate <= 0.65, (

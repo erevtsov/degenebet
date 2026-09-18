@@ -145,43 +145,60 @@ class Efficacy:
 # ============================================================
 # BACKTEST — pure scorer, market-aware (spread_line), sizing-aware.
 # Same run()/run_folds() shape as Efficacy's evaluate()/evaluate_folds().
+# This sketch reflects the current implementation; see
+# src/degenebet/modeling/backtest.py and
+# docs/superpowers/specs/2026-09-18-backtest-rework-design.md for the
+# authoritative, up-to-date shapes.
 # ============================================================
 
 class SizingStrategy(Protocol):
-    def size(self, predicted: pl.DataFrame) -> pl.DataFrame:
-        """Input includes `edge` (predicted_result - spread_line) and
-        `side`, so confidence-based sizing (larger |edge| -> larger bet)
-        is possible once implemented. Adds a `units` column."""
-        ...
+    """predictions already has edge, side, and win_multiplier computed
+    (win_multiplier so a future odds-aware strategy, e.g. Kelly, can size
+    against the real payout, not just the edge). Adds a stake column."""
+    def size(self, predictions: pl.DataFrame) -> pl.DataFrame: ...
 
-class FlatSizing(SizingStrategy):
-    """Today's implicit 1-unit-per-bet, made explicit. Ignores edge."""
-    def size(self, predicted: pl.DataFrame) -> pl.DataFrame: ...
+class FlatSizing:
+    """Divides a normalized pool of 1.0 evenly across every bet in this
+    call — stake_i = 1.0 / N for N placed bets, regardless of edge or
+    odds. Still scores each bet at its own real American odds
+    (home_spread_odds/away_spread_odds via _win_multiplier), never a
+    hardcoded -110."""
+    def size(self, predictions: pl.DataFrame) -> pl.DataFrame: ...
 
 @dataclass(frozen=True)
 class BacktestResult:
     bets: pl.DataFrame
     bets_placed: int
-    win_rate: float
+    ats_win_rate: float
     units_won: float
     roi_pct: float
-    by_fold: pl.DataFrame | None
+    by_fold: pl.DataFrame | None   # None from run(); a per-fold breakdown from run_folds()
 
 class Backtest:
     def __init__(self, sizing_strategy: SizingStrategy, edge_threshold: float = 1.0): ...
 
-    def run(self, training_result: TrainingResult, test_data: pl.DataFrame) -> BacktestResult:
+    def run(self, predictions: pl.DataFrame) -> BacktestResult:
         """Pure, single-fold, deterministic — no fitting. Computes
         edge = predicted_result - spread_line, decides side, sizes via
-        sizing_strategy (which sees edge), scores win/loss/push at -110."""
+        sizing_strategy (which sees edge), scores win/loss/push at each
+        bet's own real American odds via _win_multiplier."""
         ...
 
-    def run_folds(self, folds: Iterable[tuple[TrainingResult, pl.DataFrame]]) -> BacktestResult:
-        """Calls run() once per fold, concatenates each fold's `bets`,
-        and RECOMPUTES pooled stats from the concatenated raw bets —
-        never by averaging each fold's already-computed win_rate/roi_pct
-        (that would mis-weight folds with different bet counts)."""
+    def run_folds(self, folds: Iterable[FoldPredictions]) -> BacktestResult:
+        """Calls run() once per fold's out_of_sample data, concatenates
+        each fold's `bets`, and RECOMPUTES pooled stats from the
+        concatenated raw bets — never by averaging each fold's
+        already-computed ats_win_rate/roi_pct (that would mis-weight
+        folds with different bet counts)."""
         ...
+
+def compute_bankroll_trajectory(
+    by_fold: pl.DataFrame, starting_bankroll: float
+) -> BankrollTrajectory:
+    """Sequentially compounds run_folds()'s by_fold.units_won into a
+    dollar-denominated trajectory. Requires by_fold from run_folds() —
+    run()'s by_fold is always None."""
+    ...
 ```
 
 ## Settled
@@ -261,20 +278,27 @@ multi-configuration search:
   deliberate human-judgment step, not something any class does for you.
 
 **`Backtest`** — pure scorer, same shape as Efficacy:
-- `run(training_result, test_data) -> BacktestResult`: single fold,
-  deterministic — decide bets from `training_result.predictions` vs.
-  `test_data`'s spread_line, size via `SizingStrategy`, score win/loss/
-  push. No fitting happens here — this is what you want when you already
-  have weights (e.g. from a single-split Efficacy check) and just want to
-  score them.
-- `run_folds(folds) -> BacktestResult`: calls `run()` once per fold,
-  concatenates each fold's `bets`, and **recomputes pooled stats from the
-  concatenated raw bets — never by averaging each fold's already-computed
-  win_rate/roi_pct.** Averaging per-fold percentages weights a 2-bet fold
-  equally to a 20-bet fold, which is wrong; concatenating first gets the
-  weighting right for free. `by_fold` (the per-season/per-fold breakdown)
-  is legitimately computed per-fold — that's a different, valid question
-  ("how'd it do *within* this fold") from the pooled number.
+- `run(predictions) -> BacktestResult`: single fold, deterministic —
+  decide bets from `predictions`' `predicted_result` vs. `spread_line`,
+  size via `SizingStrategy` (`FlatSizing` divides a normalized 1.0 pool
+  evenly across that call's placed bets, not a constant per-bet stake),
+  score win/loss/push at each bet's own real American odds
+  (`home_spread_odds`/`away_spread_odds` via `_win_multiplier`) — never a
+  hardcoded -110. `by_fold` is always `None` here.
+- `run_folds(folds) -> BacktestResult`: takes a `FoldPredictions` stream
+  (from `iterate_folds`), calls `run()` once per fold's `out_of_sample`
+  data, concatenates each fold's `bets`, and **recomputes pooled stats
+  from the concatenated raw bets — never by averaging each fold's
+  already-computed ats_win_rate/roi_pct.** Averaging per-fold percentages
+  weights a 2-bet fold equally to a 20-bet fold, which is wrong;
+  concatenating first gets the weighting right for free. `by_fold` (the
+  per-fold breakdown) is legitimately computed per-fold — that's a
+  different, valid question ("how'd it do *within* this fold") from the
+  pooled number.
+- `compute_bankroll_trajectory(by_fold, starting_bankroll)` sequentially
+  compounds `run_folds()`'s per-fold `units_won` into a dollar-
+  denominated bankroll trajectory; requires `by_fold` from `run_folds()`
+  (raises `ValueError` if given `run()`'s, which is always `None`).
 - "Re-fit every observation or not" is fully determined by which
   `SplitStrategy` is passed to `iterate_folds` — no separate flag needed
   on `Backtest`.
