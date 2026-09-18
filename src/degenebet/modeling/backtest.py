@@ -1,78 +1,73 @@
-"""Backtest harness: evaluates a SpreadModel against real historical closing lines."""
+"""Backtest: market-aware, sizing-aware scoring of a Model's predictions
+against real historical closing lines and real per-bet American odds. See
+docs/superpowers/specs/2026-09-18-backtest-rework-design.md.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import Protocol, TypedDict, cast
 
 import polars as pl
 
-from degenebet.modeling.spread_model import SpreadModel
 
-_UNITS_RISKED_PER_BET = 1.1  # -110 pricing: risk 1.1 units to win 1.0
-
-
-@dataclass(frozen=True)
-class BacktestResult:
-    bets: pl.DataFrame
+class _BetsSummary(TypedDict):
     bets_placed: int
     ats_win_rate: float
     units_won: float
     roi_pct: float
 
 
-def run_backtest(
-    model_table: pl.DataFrame,
-    *,
-    train_seasons: list[int],
-    test_seasons: list[int],
-    edge_threshold: float = 1.0,
-    model: SpreadModel | None = None,
-) -> BacktestResult:
-    """Fits (or uses the given, already-configured) SpreadModel on
-    train_seasons, predicts on test_seasons.
+def _win_multiplier(odds: int) -> float:
+    """American odds -> profit per unit risked. Negative odds (e.g. -110,
+    risk $1.10 to win $1.00): 100/abs(odds). Positive odds (e.g. +120,
+    risk $100 to win $120): odds/100."""
+    return 100.0 / abs(odds) if odds < 0 else odds / 100.0
 
-    Bets 1 unit on the side (home/away) whose edge exceeds edge_threshold;
-    skips games without sufficient edge. Scores each bet against the real
-    `result` via the cover-margin formula (result - spread_line) at -110
-    pricing (push refunds the bet, excluded from win rate).
 
-    Raises ValueError if train_seasons and test_seasons overlap (leakage),
-    or if train_seasons filters to zero rows (nothing to fit on). An empty
-    test_seasons filter is not an error (e.g. an in-progress season with no
-    played games yet) and returns a zeroed BacktestResult instead.
-    """
-    overlap = set(train_seasons) & set(test_seasons)
-    if overlap:
+class SizingStrategy(Protocol):
+    def size(self, predictions: pl.DataFrame) -> pl.DataFrame: ...
+
+    """predictions already has edge, side, and win_multiplier computed
+    (win_multiplier so a future odds-aware strategy, e.g. Kelly, can size
+    against the real payout, not just the edge). Adds a stake column."""
+
+
+class FlatSizing:
+    """Divides a normalized pool of 1.0 evenly across every bet in this
+    call -- stake_i = 1.0 / N for N placed bets, regardless of edge or
+    odds. This is "flat" in the sense of splitting a period's betting
+    pool evenly across that period's bets, not a constant per-bet dollar
+    amount. The backtest still scores each bet at its own real payout
+    odds; FlatSizing only decides how the pool is split, never the
+    payout."""
+
+    def size(self, predictions: pl.DataFrame) -> pl.DataFrame:
+        n = predictions.height
+        return predictions.with_columns(pl.lit(1.0 / n if n > 0 else 0.0).alias("stake"))
+
+
+def _decide_bets(predictions: pl.DataFrame, edge_threshold: float) -> pl.DataFrame:
+    """Guard 1 (predicted_result/result/spread_line non-null), compute
+    edge = predicted_result - spread_line, decide side (home if
+    edge > edge_threshold, away if edge < -edge_threshold, else none),
+    filter to placed bets, resolve bet_odds and win_multiplier. Guard 2
+    (bet_odds non-null among placed bets). Backtest never filters
+    unplayed games itself -- see the module docstring; the caller opts in
+    explicitly before this is ever called."""
+    null_counts = predictions.select("predicted_result", "result", "spread_line").null_count()
+    null_columns = [
+        c for c in ("predicted_result", "result", "spread_line") if null_counts[c][0] > 0
+    ]
+    if null_columns:
         raise ValueError(
-            f"train_seasons and test_seasons overlap: {sorted(overlap)} — "
-            "this would leak test-season data into training and inflate results."
+            f"predictions has null values in {null_columns} -- Backtest never filters "
+            "unplayed games itself. Filter them out explicitly (e.g. "
+            "predictions.filter(pl.col('result').is_not_null() & "
+            "pl.col('spread_line').is_not_null())) before calling run()/run_folds()."
         )
 
-    train = model_table.filter(pl.col("season").is_in(train_seasons))
-    test = model_table.filter(pl.col("season").is_in(test_seasons))
-
-    if train.height == 0:
-        raise ValueError(f"No rows in model_table for train_seasons={train_seasons}")
-
-    # Unplayed/incomplete games (null result or spread_line) can't be scored.
-    # Filtering (rather than raising) keeps run_backtest usable for a future
-    # "generate picks for upcoming games" feature, where predicting on rows
-    # with a null result is expected, not an error.
-    test = test.filter(pl.col("result").is_not_null() & pl.col("spread_line").is_not_null())
-
-    if test.height == 0:
-        # "No games to bet on this test season" is a legitimate scenario,
-        # not an error — same zeroed shape as the no-qualifying-bets case.
-        return BacktestResult(
-            bets=test, bets_placed=0, ats_win_rate=0.0, units_won=0.0, roi_pct=0.0
-        )
-
-    spread_model = model if model is not None else SpreadModel()
-    spread_model.fit(train)
-    predicted = spread_model.predict(test)
-
-    predicted = predicted.with_columns(
+    decided = predictions.with_columns(
         (pl.col("predicted_result") - pl.col("spread_line")).alias("edge")
     ).with_columns(
         pl.when(pl.col("edge") > edge_threshold)
@@ -83,9 +78,39 @@ def run_backtest(
         .alias("side")
     )
 
-    bets_df = (
-        predicted.filter(pl.col("side") != "none")
-        .with_columns((pl.col("result") - pl.col("spread_line")).alias("home_cover_margin"))
+    placed = decided.filter(pl.col("side") != "none").with_columns(
+        pl.when(pl.col("side") == "home")
+        .then(pl.col("home_spread_odds"))
+        .otherwise(pl.col("away_spread_odds"))
+        .alias("bet_odds")
+    )
+
+    if placed.height > 0 and placed["bet_odds"].null_count() > 0:
+        raise ValueError(
+            "predictions has null bet_odds (home_spread_odds/away_spread_odds) among "
+            "placed bets -- Backtest never filters unplayed/unpriced games itself. "
+            "Filter them out explicitly before calling run()/run_folds()."
+        )
+
+    return placed.with_columns(
+        # map_elements (not a vectorized pl.when expression) so _win_multiplier
+        # has exactly one implementation -- directly unit-tested and directly
+        # used, never duplicated between a scalar function and an inline
+        # expression that could drift from it. Placed-bet counts per call are
+        # small (one gameweek's qualifying games at most), so the per-row
+        # Python call overhead is not a real cost here.
+        pl.col("bet_odds")
+        .map_elements(_win_multiplier, return_dtype=pl.Float64)
+        .alias("win_multiplier")
+    )
+
+
+def _score_bets(sized: pl.DataFrame) -> pl.DataFrame:
+    """sized already has stake (from SizingStrategy.size()). Computes
+    home_cover_margin = result - spread_line, push/won, and units =
+    stake * win_multiplier if won, -stake if lost, 0 if push."""
+    return (
+        sized.with_columns((pl.col("result") - pl.col("spread_line")).alias("home_cover_margin"))
         .with_columns(
             (pl.col("home_cover_margin") == 0).alias("push"),
             pl.when(pl.col("side") == "home")
@@ -97,22 +122,59 @@ def run_backtest(
             pl.when(pl.col("push"))
             .then(0.0)
             .when(pl.col("won"))
-            .then(1.0)
-            .otherwise(-_UNITS_RISKED_PER_BET)
+            .then(pl.col("stake") * pl.col("win_multiplier"))
+            .otherwise(-pl.col("stake"))
             .alias("units")
         )
     )
+
+
+def _summarize_bets(bets_df: pl.DataFrame) -> _BetsSummary:
+    """bets_placed, ats_win_rate, units_won, roi_pct. Returns zeroed
+    values if bets_df is empty (0 rows) -- not an error, see the
+    null-handling contract above. Shared by run() and both the per-fold
+    and pooled calls inside run_folds() -- same DRY principle as
+    Efficacy's _compute_metrics."""
+    if bets_df.height == 0:
+        return {"bets_placed": 0, "ats_win_rate": 0.0, "units_won": 0.0, "roi_pct": 0.0}
 
     decided = bets_df.filter(~pl.col("push"))
     bets_placed = bets_df.height
     ats_win_rate = float(cast(float, decided["won"].mean())) if decided.height > 0 else 0.0
     units_won = float(cast(float, bets_df["units"].sum()))
-    roi_pct = (units_won / (bets_placed * _UNITS_RISKED_PER_BET) * 100) if bets_placed > 0 else 0.0
+    total_staked = float(cast(float, bets_df["stake"].sum()))
+    roi_pct = (units_won / total_staked * 100) if total_staked > 0 else 0.0
 
-    return BacktestResult(
-        bets=bets_df,
-        bets_placed=bets_placed,
-        ats_win_rate=ats_win_rate,
-        units_won=units_won,
-        roi_pct=roi_pct,
-    )
+    return {
+        "bets_placed": bets_placed,
+        "ats_win_rate": ats_win_rate,
+        "units_won": units_won,
+        "roi_pct": roi_pct,
+    }
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    bets: pl.DataFrame
+    bets_placed: int
+    ats_win_rate: float
+    units_won: float
+    roi_pct: float
+    by_fold: pl.DataFrame | None
+
+
+class Backtest:
+    """Market-aware, sizing-aware scorer -- mirrors Efficacy's
+    evaluate()/evaluate_folds() shape. ats_win_rate is NOT the same
+    concept as Efficacy's directional_accuracy -- see
+    architecture-notes.md's explicit warning against conflating the two
+    "win rate"s."""
+
+    def __init__(self, sizing_strategy: SizingStrategy, edge_threshold: float = 1.0) -> None:
+        self.sizing_strategy = sizing_strategy
+        self.edge_threshold = edge_threshold
+
+    def run(self, predictions: pl.DataFrame) -> BacktestResult:
+        decided = _decide_bets(predictions, self.edge_threshold)
+        bets_df = _score_bets(self.sizing_strategy.size(decided))
+        return BacktestResult(bets=bets_df, by_fold=None, **_summarize_bets(bets_df))
