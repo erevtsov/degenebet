@@ -82,6 +82,7 @@ _TEAM_DATA_CONTEXT_COLUMNS = frozenset(
         "is_home",
         "team_spread_line",
         "team_margin",
+        "opponent_team",
     }
 )
 
@@ -356,4 +357,11 @@ class DataAccess:
         team_stats = nflverse_cache.read_merged("team_stats")
         if team_stats is None or long_table.height == 0:
             return long_table
+        # season/week/gameweek are already on long_table from
+        # _to_team_indexed; dropping team_stats's own copies before the join
+        # avoids polars auto-suffixing them to season_right/week_right/
+        # gameweek_right on collision.
+        team_stats = team_stats.drop(
+            [c for c in ("season", "week", "gameweek") if c in team_stats.columns]
+        )
         return long_table.join(team_stats, on=["game_id", "team"], how="left")

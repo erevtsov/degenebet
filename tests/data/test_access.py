@@ -503,6 +503,54 @@ def test_get_game_data_widens_team_data_with_home_away_prefixes() -> None:
     assert "home_season" not in result.columns
 
 
+def test_get_game_data_widens_real_get_team_data_output_without_duplicate_columns() -> None:
+    """The spec's own named use case (Decision 3), exercised end-to-end
+    against real DataAccess methods and a real merged store -- not a
+    hand-built fixture that happens to already match
+    _TEAM_DATA_CONTEXT_COLUMNS. Covers both root causes: team_stats's own
+    season/week/gameweek colliding with get_team_data's context columns
+    (would auto-suffix _right), and team_stats's opponent_team surviving
+    widening as a duplicate of home_team/away_team."""
+    nflverse_cache.load_or_merge(
+        pl.DataFrame([_schedule_row(result=None, spread_line=None)]),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+    nflverse_cache.load_or_merge(
+        pl.DataFrame(
+            {
+                "game_id": ["2026_02_MIN_CHI", "2026_02_MIN_CHI"],
+                "team": ["chi", "min"],
+                "opponent_team": ["min", "chi"],
+                "season": [2026, 2026],
+                "week": [2, 2],
+                "gameweek": [202602, 202602],
+                "passing_epa": [12.5, -3.2],
+            }
+        ),
+        name="team_stats",
+        key_columns=["game_id", "team"],
+        group_column="season",
+    )
+    data_access = DataAccess(NflverseSource(), _FakeSource(pl.DataFrame()))
+    team_data = data_access.get_team_data(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+    )
+
+    result = data_access.get_game_data(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17), team_data=team_data
+    )
+
+    assert result.height == 1
+    assert not any(c.endswith("_right") for c in result.columns)
+    assert "home_opponent_team" not in result.columns
+    assert "away_opponent_team" not in result.columns
+    row = result.row(0, named=True)
+    assert row["home_passing_epa"] == pytest.approx(12.5)
+    assert row["away_passing_epa"] == pytest.approx(-3.2)
+
+
 def test_get_game_data_without_team_data_returns_bare_schedule() -> None:
     historical = _FakeSource(pl.DataFrame([_schedule_row(result=7, spread_line=-3.0)]))
     current = _FakeSource(pl.DataFrame())
