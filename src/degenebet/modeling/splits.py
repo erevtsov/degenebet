@@ -26,9 +26,8 @@ class SplitStrategy(Protocol):
 
 
 class SingleSplit:
-    """One (train, test) pair by season list. Mirrors run_backtest's
-    existing train_seasons/test_seasons filtering and leakage guards,
-    extracted here rather than reimplemented."""
+    """One (train, test) pair by season list, with a leakage guard
+    against overlapping train/test seasons."""
 
     def __init__(self, train_seasons: list[int], test_seasons: list[int]) -> None:
         self.train_seasons = train_seasons
@@ -58,6 +57,34 @@ class SingleSplit:
             raise ValueError(f"No rows in data for train_seasons={self.train_seasons}")
 
         yield Split(train=train, test=test)
+
+
+class WalkForwardSplit:
+    """One (train, test) pair per gameweek from the first post-warmup
+    season onward, expanding window (train grows every fold, never
+    shrinks or slides). Does not filter unplayed rows -- same rule as
+    SingleSplit; a fold that walks into a partially-played or future week
+    just has null-result rows in its test, which Backtest's own guard
+    catches if that fold ever reaches run()/run_folds() unfiltered."""
+
+    def __init__(self, warmup_seasons: int) -> None:
+        self.warmup_seasons = warmup_seasons
+
+    def splits(self, data: pl.DataFrame) -> Iterator[Split]:
+        seasons = sorted(data["season"].unique().to_list())
+        first_test_season = seasons[0] + self.warmup_seasons
+        gameweeks = sorted(
+            data.filter(pl.col("season") >= first_test_season)["gameweek"].unique().to_list()
+        )
+        for gw in gameweeks:
+            train = data.filter(pl.col("gameweek") < gw)
+            test = data.filter(pl.col("gameweek") == gw)
+            if train.height == 0:
+                raise ValueError(
+                    f"No rows in data before gameweek={gw} "
+                    f"(warmup_seasons={self.warmup_seasons} too small?)"
+                )
+            yield Split(train=train, test=test)
 
 
 class Model(Protocol):
