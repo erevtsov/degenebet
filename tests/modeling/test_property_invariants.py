@@ -4,7 +4,7 @@ under re-aggregation, and Efficacy's directional_accuracy/r_squared bounds
 (per AGENTS.md's Automation & Verification mandate).
 
 All three tests below exercise the real production code paths
-(`SpreadModel.cover_probability`, `run_backtest`, and `Efficacy.evaluate`)
+(`SpreadModel.cover_probability`, `Backtest.run`, and `Efficacy.evaluate`)
 rather than re-testing the scipy/polars primitives they're built on.
 """
 
@@ -16,8 +16,9 @@ import pytest
 from hypothesis import given, reject
 from hypothesis import strategies as st
 
-from degenebet.modeling.backtest import run_backtest
+from degenebet.modeling.backtest import Backtest, FlatSizing
 from degenebet.modeling.efficacy import Efficacy
+from degenebet.modeling.splits import SingleSplit, iterate_folds
 from degenebet.modeling.spread_model import SpreadModel
 
 _FEATURE_COLUMNS = [
@@ -73,7 +74,13 @@ def test_cover_probability_always_in_unit_interval(
 
 
 _small_float = st.floats(min_value=-10.0, max_value=10.0, allow_nan=False, allow_infinity=False)
-_game_row = st.tuples(*([_small_float] * 8))  # 6 features + result + spread_line
+# American odds never fall strictly between -100 and +100 -- generate from
+# the two realistic ranges rather than an arbitrary nonzero integer.
+_odds_int = st.one_of(
+    st.integers(min_value=-500, max_value=-100), st.integers(min_value=100, max_value=500)
+)
+_game_row = st.tuples(*([_small_float] * 8), _odds_int, _odds_int)
+# 6 features + result + spread_line + home_spread_odds + away_spread_odds
 
 
 _test_row = st.tuples(_game_row, st.integers(min_value=1, max_value=4))
@@ -96,6 +103,8 @@ def test_backtest_pnl_reconciles_under_reaggregation(
             **{col: [row[i] for row in train_rows] for i, col in enumerate(_FEATURE_COLUMNS)},
             "result": [row[6] for row in train_rows],
             "spread_line": [row[7] for row in train_rows],
+            "home_spread_odds": [int(row[8]) for row in train_rows],
+            "away_spread_odds": [int(row[9]) for row in train_rows],
         }
     )
 
@@ -108,17 +117,23 @@ def test_backtest_pnl_reconciles_under_reaggregation(
             **{col: [row[i] for row, _ in test_rows] for i, col in enumerate(_FEATURE_COLUMNS)},
             "result": [row[6] for row, _ in test_rows],
             "spread_line": [row[7] for row, _ in test_rows],
+            "home_spread_odds": [int(row[8]) for row, _ in test_rows],
+            "away_spread_odds": [int(row[9]) for row, _ in test_rows],
         }
     )
 
     model_table = pl.concat([train_df, test_df])
+    split_strategy = SingleSplit(train_seasons=[2000], test_seasons=[2001])
     try:
-        full_result = run_backtest(model_table, train_seasons=[2000], test_seasons=[2001])
+        folds = list(iterate_folds(model_table, split_strategy, SpreadModel))
     except ValueError:
         # A degenerate train draw (e.g. residual_std ~0 or NaN) is rejected
         # by SpreadModel.fit's own guard — not what this property is about
         # (P&L re-aggregation), so discard the example rather than fail.
         reject()
+
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+    full_result = backtest.run(folds[0].out_of_sample)
 
     weekly_sum = (
         full_result.bets.group_by("week")
