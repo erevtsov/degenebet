@@ -414,6 +414,23 @@ def test_to_team_indexed_produces_two_rows_per_game_with_signed_perspective() ->
     assert away_row["team_margin"][0] == pytest.approx(-7)
 
 
+def test_to_team_indexed_empty_game_table_has_team_indexed_schema() -> None:
+    game_table = pl.DataFrame([_schedule_row()]).clear()
+
+    long_table = DataAccess(
+        _FakeSource(pl.DataFrame()), _FakeSource(pl.DataFrame())
+    )._to_team_indexed(game_table)
+
+    assert long_table.height == 0
+    assert "team" in long_table.columns
+    assert "opponent" in long_table.columns
+    assert "is_home" in long_table.columns
+    assert "team_spread_line" in long_table.columns
+    assert "team_margin" in long_table.columns
+    assert "home_team" not in long_table.columns
+    assert "away_team" not in long_table.columns
+
+
 def test_get_team_data_left_joins_team_stats_null_for_unplayed_game() -> None:
     historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=1.0)]))
     current = _FakeSource(

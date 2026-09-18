@@ -262,8 +262,10 @@ class DataAccess:
     def _to_team_indexed(self, game_table: pl.DataFrame) -> pl.DataFrame:
         """One game row -> two team rows (home's perspective, away's),
         team_spread_line/team_margin re-signed per team."""
-        if game_table.height == 0:
-            return game_table
+        # No empty-frame early return: the .select(...) chain below produces
+        # the correct team-indexed schema even on a zero-row input, and an
+        # early return of `game_table` as-is would leak the game-indexed
+        # schema (home_team/away_team, no team/opponent/is_home) instead.
         # Cast before negating: a table where every row's result/spread_line
         # is null (e.g. an unplayed game, as in a single-row test fixture)
         # infers a Null dtype from nflreadpy/polars, and `neg` isn't defined
