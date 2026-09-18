@@ -111,6 +111,14 @@ def test_backtest_run_empty_predictions_returns_zeroed_result_not_an_error() -> 
     assert result.roi_pct == 0.0
 
 
+def test_decide_bets_raises_value_error_on_missing_required_column() -> None:
+    predictions = _decided_predictions_fixture().drop("spread_line")
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+
+    with pytest.raises(ValueError, match=r"missing required column.*spread_line"):
+        backtest.run(predictions)
+
+
 def test_backtest_run_raises_on_null_predicted_result_or_result_or_spread_line() -> None:
     predictions = pl.DataFrame(
         {
@@ -307,6 +315,11 @@ def test_compute_bankroll_trajectory_zero_return_fold_leaves_bankroll_unchanged(
 
     assert trajectory.ending_bankroll == pytest.approx(100.0)
     assert trajectory.total_pnl == pytest.approx(0.0)
+
+
+def test_compute_bankroll_trajectory_raises_on_none_by_fold() -> None:
+    with pytest.raises(ValueError, match="by_fold is None"):
+        compute_bankroll_trajectory(None, 1000.0)
 
 
 def test_compute_bankroll_trajectory_total_wipeout_stays_at_zero() -> None:

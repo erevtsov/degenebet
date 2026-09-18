@@ -47,11 +47,15 @@ def _(mo):
     one fold per gameweek after a warmup period, each scored at that
     game's own real American odds (`home_spread_odds`/`away_spread_odds`
     -- not a hardcoded -110). `FlatSizing` divides a normalized pool of
-    `1.0` evenly across each week's bets; the top-level result is a
+    `1.0` evenly across each week's bets; the top-level `roi_pct` is a
     pooled, **equal-weighted average across folds** (each gameweek counts
     the same, whether it had 2 games or 14) -- a different, still useful,
     question from the compounding dollar trajectory below (`what's my
-    actual bankroll if I reinvest it every week`).
+    actual bankroll if I reinvest it every week`). `ats_win_rate`, by
+    contrast, is **bet-count-weighted, not week-weighted** -- each bet
+    counts equally regardless of which week it fell in -- which is the
+    more useful framing when comparing it to `Efficacy.directional_accuracy`
+    on a per-bet basis.
 
     Reads from the local cache only, via `DataAccess`; run
     `degenebet fetch schedules`/`degenebet fetch team-stats` (or

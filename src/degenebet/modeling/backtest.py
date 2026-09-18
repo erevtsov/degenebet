@@ -29,11 +29,11 @@ def _win_multiplier(odds: int) -> float:
 
 
 class SizingStrategy(Protocol):
-    def size(self, predictions: pl.DataFrame) -> pl.DataFrame: ...
-
     """predictions already has edge, side, and win_multiplier computed
     (win_multiplier so a future odds-aware strategy, e.g. Kelly, can size
     against the real payout, not just the edge). Adds a stake column."""
+
+    def size(self, predictions: pl.DataFrame) -> pl.DataFrame: ...
 
 
 class FlatSizing:
@@ -58,6 +58,14 @@ def _decide_bets(predictions: pl.DataFrame, edge_threshold: float) -> pl.DataFra
     (bet_odds non-null among placed bets). Backtest never filters
     unplayed games itself -- see the module docstring; the caller opts in
     explicitly before this is ever called."""
+    required_columns = ("predicted_result", "result", "spread_line")
+    missing_columns = [c for c in required_columns if c not in predictions.columns]
+    if missing_columns:
+        raise ValueError(
+            f"predictions is missing required column(s) {missing_columns} -- Backtest "
+            "needs predicted_result, result, and spread_line to decide and score bets."
+        )
+
     null_counts = predictions.select("predicted_result", "result", "spread_line").null_count()
     null_columns = [
         c for c in ("predicted_result", "result", "spread_line") if null_counts[c][0] > 0
@@ -137,7 +145,9 @@ def _summarize_bets(bets_df: pl.DataFrame) -> _BetsSummary:
     values if bets_df is empty (0 rows) -- not an error, see the
     null-handling contract above. Shared by run() and both the per-fold
     and pooled calls inside run_folds() -- same DRY principle as
-    Efficacy's _compute_metrics."""
+    Efficacy's _compute_metrics. roi_pct's denominator (sum of stake)
+    excludes a 0-bet fold entirely, unlike compute_bankroll_trajectory,
+    which treats a 0-bet fold as a legitimate 0%-return period."""
     if bets_df.height == 0:
         return {"bets_placed": 0, "ats_win_rate": 0.0, "units_won": 0.0, "roi_pct": 0.0}
 
@@ -158,6 +168,9 @@ def _summarize_bets(bets_df: pl.DataFrame) -> _BetsSummary:
 
 @dataclass(frozen=True)
 class BacktestResult:
+    """Result of scoring a set of predictions as bets; by_fold is None
+    from run(), or a per-fold breakdown from run_folds()."""
+
     bets: pl.DataFrame
     bets_placed: int
     ats_win_rate: float
@@ -178,6 +191,9 @@ class Backtest:
         self.edge_threshold = edge_threshold
 
     def run(self, predictions: pl.DataFrame) -> BacktestResult:
+        """Scores one frame. by_fold is always None here -- a single
+        frame has no fold concept, so there's nothing to build a
+        breakdown from."""
         decided = _decide_bets(predictions, self.edge_threshold)
         bets_df = _score_bets(self.sizing_strategy.size(decided))
         return BacktestResult(bets=bets_df, by_fold=None, **_summarize_bets(bets_df))
@@ -217,7 +233,7 @@ class BankrollTrajectory:
 
 
 def compute_bankroll_trajectory(
-    by_fold: pl.DataFrame, starting_bankroll: float
+    by_fold: pl.DataFrame | None, starting_bankroll: float
 ) -> BankrollTrajectory:
     """Sequentially compounds BacktestResult.by_fold's per-fold units_won
     (a normalized fractional return under FlatSizing's evenly-divided
@@ -225,9 +241,17 @@ def compute_bankroll_trajectory(
     bankroll_after = bankroll_before * (1 + units_won). Requires by_fold
     to already be in time order -- WalkForwardSplit's `fold` index (0, 1,
     2, ... in gameweek order) guarantees this as long as by_fold isn't
-    re-sorted before calling this. Only correct for a SizingStrategy
-    whose allocation is linear in the pool size (FlatSizing qualifies;
-    see the design spec's Non-goals for what doesn't)."""
+    re-sorted before calling this. Raises ValueError if by_fold is None
+    (i.e. it came from Backtest.run() rather than run_folds()). Only
+    correct for a SizingStrategy whose allocation is linear in the pool
+    size (FlatSizing qualifies; see the design spec's Non-goals for what
+    doesn't)."""
+    if by_fold is None:
+        raise ValueError(
+            "by_fold is None -- call run_folds(), not run(), to get a by-fold "
+            "breakdown for compute_bankroll_trajectory"
+        )
+
     rows = by_fold.sort("fold").iter_rows(named=True)
     bankroll = starting_bankroll
     trajectory_rows: list[dict[str, float | int]] = []
