@@ -23,47 +23,51 @@ import polars as pl
 from degenebet.data import cache, nflverse_cache, teams
 from degenebet.data.gameweek import Gameweek
 
-# SharpAPI's real full-name format, confirmed against live data 2026-09-17
-# (e.g. "Buffalo Bills", "Chicago Bears") -- not the abbreviated-city guess
-# in the provider's own test fixtures, which was never verified live.
-# Validated against teams.CANONICAL_TEAMS below, not just by this module's
-# own tests happening to exercise every team.
-_SHARPAPI_TEAM_CROSSWALK: dict[str, str] = {
-    "Arizona Cardinals": "ari",
-    "Atlanta Falcons": "atl",
-    "Baltimore Ravens": "bal",
-    "Buffalo Bills": "buf",
-    "Carolina Panthers": "car",
-    "Chicago Bears": "chi",
-    "Cincinnati Bengals": "cin",
-    "Cleveland Browns": "cle",
-    "Dallas Cowboys": "dal",
-    "Denver Broncos": "den",
-    "Detroit Lions": "det",
-    "Green Bay Packers": "gb",
-    "Houston Texans": "hou",
-    "Indianapolis Colts": "ind",
-    "Jacksonville Jaguars": "jax",
-    "Kansas City Chiefs": "kc",
-    "Las Vegas Raiders": "lv",
-    "Los Angeles Chargers": "lac",
-    "Los Angeles Rams": "la",
-    "Miami Dolphins": "mia",
-    "Minnesota Vikings": "min",
-    "New England Patriots": "ne",
-    "New Orleans Saints": "no",
-    "New York Giants": "nyg",
-    "New York Jets": "nyj",
-    "Philadelphia Eagles": "phi",
-    "Pittsburgh Steelers": "pit",
-    "San Francisco 49ers": "sf",
-    "Seattle Seahawks": "sea",
-    "Tampa Bay Buccaneers": "tb",
-    "Tennessee Titans": "ten",
-    "Washington Commanders": "was",
+# SharpAPI's real data is inconsistent about the city-name prefix -- live
+# verification on 2026-09-18 found BOTH "Arizona Cardinals" and "ARI
+# Cardinals" for the same team in the same pull. Every NFL mascot is a
+# unique single word across all 32 teams, so keying on the trailing mascot
+# word (extracted from whatever prefix format a given row uses) is robust
+# to this vendor inconsistency, rather than needing to enumerate every
+# possible city-prefix variant as they surface. Validated against
+# teams.CANONICAL_TEAMS below, not just by this module's own tests
+# happening to exercise every team.
+_SHARPAPI_MASCOT_TO_TEAM: dict[str, str] = {
+    "Cardinals": "ari",
+    "Falcons": "atl",
+    "Ravens": "bal",
+    "Bills": "buf",
+    "Panthers": "car",
+    "Bears": "chi",
+    "Bengals": "cin",
+    "Browns": "cle",
+    "Cowboys": "dal",
+    "Broncos": "den",
+    "Lions": "det",
+    "Packers": "gb",
+    "Texans": "hou",
+    "Colts": "ind",
+    "Jaguars": "jax",
+    "Chiefs": "kc",
+    "Raiders": "lv",
+    "Chargers": "lac",
+    "Rams": "la",
+    "Dolphins": "mia",
+    "Vikings": "min",
+    "Patriots": "ne",
+    "Saints": "no",
+    "Giants": "nyg",
+    "Jets": "nyj",
+    "Eagles": "phi",
+    "Steelers": "pit",
+    "49ers": "sf",
+    "Seahawks": "sea",
+    "Buccaneers": "tb",
+    "Titans": "ten",
+    "Commanders": "was",
 }
 
-teams.assert_maps_to_canonical_teams(_SHARPAPI_TEAM_CROSSWALK)
+teams.assert_maps_to_canonical_teams(_SHARPAPI_MASCOT_TO_TEAM)
 
 # get_team_data's own columns that are just a team-indexed restatement of
 # information get_game_data's base table already has (season/week/gameweek/
@@ -118,10 +122,18 @@ class SharpApiSource:
             )
 
         home_spreads = raw.filter(
-            (pl.col("market_type") == "spread") & (pl.col("selection_type") == "home")
+            # "point_spread" is the real market_type value for the full-game
+            # spread -- confirmed against live data 2026-09-18. The feed also
+            # has period-specific variants ("1st_half_point_spread",
+            # "2nd_quarter_point_spread", ...) that an exact match correctly
+            # excludes.
+            (pl.col("market_type") == "point_spread") & (pl.col("selection_type") == "home")
         ).with_columns(
-            pl.col("home_team").replace_strict(_SHARPAPI_TEAM_CROSSWALK),
-            pl.col("away_team").replace_strict(_SHARPAPI_TEAM_CROSSWALK),
+            # Extract the trailing mascot word before crosswalk lookup --
+            # see _SHARPAPI_MASCOT_TO_TEAM's comment for why (vendor sends
+            # inconsistent city-name prefixes for the same team).
+            pl.col("home_team").str.extract(r"(\S+)$").replace_strict(_SHARPAPI_MASCOT_TO_TEAM),
+            pl.col("away_team").str.extract(r"(\S+)$").replace_strict(_SHARPAPI_MASCOT_TO_TEAM),
             (-pl.col("line")).alias("spread_line"),
             # event_start_time is UTC; nflreadpy's gameday is the game's
             # Eastern-local calendar date, so an evening kickoff (~20% of

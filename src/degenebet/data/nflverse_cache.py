@@ -63,7 +63,7 @@ def load_or_merge(
     fetch rather than let it pass unnoticed.
     """
     existing = read_merged(name)
-    if existing is not None:
+    if existing is not None and existing.height > 0:
         missing = set(new.columns) - set(existing.columns)
         if missing:
             raise ValueError(

@@ -122,6 +122,22 @@ def test_load_or_merge_raises_clear_error_when_existing_store_predates_schema_ch
         )
 
 
+def test_load_or_merge_does_not_raise_on_empty_existing_store_with_new_columns() -> None:
+    empty_existing = pl.DataFrame(
+        {"game_id": [], "season": []}, schema={"game_id": pl.Utf8, "season": pl.Int64}
+    )
+    nflverse_cache.load_or_merge(
+        empty_existing, name="schedules", key_columns=["game_id"], group_column="season"
+    )
+    new = pl.DataFrame({"game_id": ["a"], "season": [2024], "gameweek": [202401]})
+
+    result = nflverse_cache.load_or_merge(
+        new, name="schedules", key_columns=["game_id"], group_column="season"
+    )
+
+    assert result["game_id"].to_list() == ["a"]
+
+
 def test_sync_schedules_normalizes_team_codes_and_adds_gameweek(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
