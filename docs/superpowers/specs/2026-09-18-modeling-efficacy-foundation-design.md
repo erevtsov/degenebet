@@ -202,7 +202,7 @@ reached into as an implementation detail.
 @dataclass(frozen=True)
 class EfficacyResult:
     metrics: dict[str, float]       # pooled, out-of-sample only
-    by_fold: pl.DataFrame | None    # one row per fold: in_sample_*/out_of_sample_* metrics
+    by_fold: pl.DataFrame | None    # long format: fold, sample, one column per metric
 
 class Efficacy:
     def evaluate(self, predictions: pl.DataFrame) -> EfficacyResult: ...
@@ -226,24 +226,31 @@ note). Computes, as `EfficacyResult.metrics`:
 - `information_coefficient` — Pearson correlation between `predicted_result`
   and `result` (`scipy.stats.pearsonr`).
 
-Raises `ValueError` if `result` has any nulls (can't score against missing
-ground truth) or if the frame is empty (zero rows) — loud, not silent NaN
+`evaluate()` always returns `by_fold=None` — a single frame has no fold
+concept, so there's nothing to build a fold breakdown from. Raises
+`ValueError` if `result` has any nulls (can't score against missing ground
+truth) or if the frame is empty (zero rows) — loud, not silent NaN
 metrics, same philosophy as `SpreadModel`'s null-feature guard from the
 `build_model_table` retirement.
 
 **`evaluate_folds(folds)`** consumes `iterate_folds`'s `FoldPredictions`
-stream directly. Per fold, calls `evaluate()` on `fold.in_sample` and
-`fold.out_of_sample` separately, populating one `by_fold` row (columns:
-`fold` index, `in_sample_rmse`, `out_of_sample_rmse`,
-`in_sample_r_squared`, `out_of_sample_r_squared`, etc. for every metric).
-The top-level `metrics` is computed by **concatenating every fold's
+stream directly. Per fold, it calls `evaluate()` on `fold.in_sample` and
+`fold.out_of_sample` separately and turns each call's `.metrics` dict into
+one `by_fold` row tagged with `fold` (the 0-indexed fold number) and
+`sample` (`"in_sample"` or `"out_of_sample"`) — e.g. `{"fold": 0, "sample":
+"in_sample", **evaluate(fold.in_sample).metrics}` — then concatenates every
+row across every fold. No renaming or merging logic is needed: each row is
+exactly one `evaluate()` call's output plus two tag columns. The top-level
+`metrics` is computed separately, by **concatenating every fold's
 `out_of_sample` frame and scoring once** — never by averaging each fold's
-already-computed metrics — the same "pooled, not averaged" rule
-`Backtest.run_folds` already documents, so a future `WalkForwardSplit` with
-uneven fold sizes doesn't mis-weight. In-sample figures live only in
-`by_fold` (the walk-forward-efficiency comparison, per Pardo); the
-headline `metrics` is out-of-sample only, since that's the honest
-generalization number a human compares across candidate model configs.
+already-computed metrics, and not derivable from `by_fold` by filtering it
+(that would average per-fold metrics, which is exactly the thing this
+avoids) — the same "pooled, not averaged" rule `Backtest.run_folds`
+already documents, so a future `WalkForwardSplit` with uneven fold sizes
+doesn't mis-weight. In-sample figures live only in `by_fold` (the
+walk-forward-efficiency comparison, per Pardo); the headline `metrics` is
+out-of-sample only, since that's the honest generalization number a human
+compares across candidate model configs.
 
 ## Data flow (usage example)
 
