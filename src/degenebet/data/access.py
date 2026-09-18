@@ -65,6 +65,26 @@ _SHARPAPI_TEAM_CROSSWALK: dict[str, str] = {
 
 teams.assert_maps_to_canonical_teams(_SHARPAPI_TEAM_CROSSWALK)
 
+# get_team_data's own columns that are just a team-indexed restatement of
+# information get_game_data's base table already has (season/week/gameweek/
+# gameday, the spread/result pair re-signed per team, home/away, opponent).
+# _widen_with_team_data excludes these so widening never produces columns
+# like home_team_spread_line duplicating spread_line.
+_TEAM_DATA_CONTEXT_COLUMNS = frozenset(
+    {
+        "game_id",
+        "team",
+        "season",
+        "week",
+        "gameweek",
+        "gameday",
+        "opponent",
+        "is_home",
+        "team_spread_line",
+        "team_margin",
+    }
+)
+
 
 class HistoricalDataSource(Protocol):
     def fetch(self, start_week: Gameweek, end_week: Gameweek) -> pl.DataFrame: ...
@@ -238,3 +258,100 @@ class DataAccess:
             .with_columns(pl.coalesce(["current_spread_line", "spread_line"]).alias("spread_line"))
             .drop("current_spread_line")
         )
+
+    def _to_team_indexed(self, game_table: pl.DataFrame) -> pl.DataFrame:
+        """One game row -> two team rows (home's perspective, away's),
+        team_spread_line/team_margin re-signed per team."""
+        if game_table.height == 0:
+            return game_table
+        # Cast before negating: a table where every row's result/spread_line
+        # is null (e.g. an unplayed game, as in a single-row test fixture)
+        # infers a Null dtype from nflreadpy/polars, and `neg` isn't defined
+        # for Null; casting to Float64 first keeps both sides' dtypes
+        # identical too, which pl.concat(how="vertical") requires.
+        home_side = game_table.select(
+            "game_id",
+            "season",
+            "week",
+            "gameweek",
+            "gameday",
+            pl.col("home_team").alias("team"),
+            pl.col("away_team").alias("opponent"),
+            pl.lit(True).alias("is_home"),
+            pl.col("spread_line").cast(pl.Float64).alias("team_spread_line"),
+            pl.col("result").cast(pl.Float64).alias("team_margin"),
+        )
+        away_side = game_table.select(
+            "game_id",
+            "season",
+            "week",
+            "gameweek",
+            "gameday",
+            pl.col("away_team").alias("team"),
+            pl.col("home_team").alias("opponent"),
+            pl.lit(False).alias("is_home"),
+            (-pl.col("spread_line").cast(pl.Float64)).alias("team_spread_line"),
+            (-pl.col("result").cast(pl.Float64)).alias("team_margin"),
+        )
+        return pl.concat([home_side, away_side], how="vertical")
+
+    def _widen_with_team_data(
+        self, game_table: pl.DataFrame, team_data: pl.DataFrame
+    ) -> pl.DataFrame:
+        """Join `team_data` (keyed on game_id, team) onto `game_table` twice
+        -- home perspective and away perspective -- prefixing every
+        non-context column home_/away_. Generic: works whether `team_data`
+        is get_team_data()'s own output or compute_rolling_features()'s."""
+        payload_columns = [c for c in team_data.columns if c not in _TEAM_DATA_CONTEXT_COLUMNS]
+        home_payload = team_data.select(
+            "game_id",
+            "team",
+            *[pl.col(c).alias(f"home_{c}") for c in payload_columns],
+        )
+        away_payload = team_data.select(
+            "game_id",
+            "team",
+            *[pl.col(c).alias(f"away_{c}") for c in payload_columns],
+        )
+        return game_table.join(
+            home_payload,
+            left_on=["game_id", "home_team"],
+            right_on=["game_id", "team"],
+            how="left",
+        ).join(
+            away_payload,
+            left_on=["game_id", "away_team"],
+            right_on=["game_id", "team"],
+            how="left",
+        )
+
+    def get_game_data(
+        self,
+        start_week: Gameweek,
+        end_week: Gameweek,
+        as_of_date: date,
+        *,
+        team_data: pl.DataFrame | None = None,
+    ) -> pl.DataFrame:
+        """One row per game: game_id, season, week, gameweek, gameday,
+        home_team, away_team, result, spread_line. If `team_data` is given
+        (any team-indexed table keyed on game_id, team), its payload
+        columns are joined in twice, prefixed home_/away_."""
+        game_table = self._get_stitched_schedule(start_week, end_week, as_of_date)
+        if team_data is None or game_table.height == 0:
+            return game_table
+        return self._widen_with_team_data(game_table, team_data)
+
+    def get_team_data(
+        self, start_week: Gameweek, end_week: Gameweek, as_of_date: date
+    ) -> pl.DataFrame:
+        """One row per (game_id, team): schedule/spread context from that
+        team's own perspective, plus the full raw team_stats row for
+        (game_id, team) left-joined -- null for a game with no stats yet
+        (it hasn't been played)."""
+        game_table = self._get_stitched_schedule(start_week, end_week, as_of_date)
+        long_table = self._to_team_indexed(game_table)
+        team_stats = nflverse_cache.read_merged("team_stats")
+        if team_stats is None or long_table.height == 0:
+            return long_table
+        return long_table.join(team_stats, on=["game_id", "team"], how="left")

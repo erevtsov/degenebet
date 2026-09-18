@@ -392,3 +392,108 @@ def test_stitched_schedule_reconciles_on_gameweek_not_exact_gameday() -> None:
     )
 
     assert result["spread_line"][0] == pytest.approx(2.5)
+
+
+def test_to_team_indexed_produces_two_rows_per_game_with_signed_perspective() -> None:
+    game_table = pl.DataFrame([_schedule_row(result=7, spread_line=-3.0)])
+
+    long_table = DataAccess(
+        _FakeSource(pl.DataFrame()), _FakeSource(pl.DataFrame())
+    )._to_team_indexed(game_table)
+
+    assert long_table.height == 2
+    home_row = long_table.filter(pl.col("is_home"))
+    away_row = long_table.filter(~pl.col("is_home"))
+    assert home_row["team"][0] == "chi"
+    assert home_row["opponent"][0] == "min"
+    assert home_row["team_spread_line"][0] == pytest.approx(-3.0)
+    assert home_row["team_margin"][0] == pytest.approx(7)
+    assert away_row["team"][0] == "min"
+    assert away_row["opponent"][0] == "chi"
+    assert away_row["team_spread_line"][0] == pytest.approx(3.0)
+    assert away_row["team_margin"][0] == pytest.approx(-7)
+
+
+def test_get_team_data_left_joins_team_stats_null_for_unplayed_game() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=1.0)]))
+    current = _FakeSource(
+        pl.DataFrame(
+            schema={
+                "home_team": pl.Utf8,
+                "away_team": pl.Utf8,
+                "gameday": pl.Utf8,
+                "spread_line": pl.Float64,
+                "pulled_at": pl.Datetime(time_zone="UTC"),
+            }
+        )
+    )
+    nflverse_cache.load_or_merge(
+        pl.DataFrame(
+            {
+                "game_id": ["2026_02_MIN_CHI"],
+                "team": ["chi"],
+                "season": [2026],
+                "week": [2],
+                "passing_epa": [12.5],
+            }
+        ),
+        name="team_stats",
+        key_columns=["game_id", "team"],
+        group_column="season",
+    )
+
+    result = DataAccess(historical, current).get_team_data(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+    )
+
+    chi_row = result.filter(pl.col("team") == "chi")
+    min_row = result.filter(pl.col("team") == "min")
+    assert chi_row["passing_epa"][0] == pytest.approx(12.5)
+    assert min_row["passing_epa"][0] is None
+
+
+def test_get_game_data_widens_team_data_with_home_away_prefixes() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=7, spread_line=-3.0)]))
+    current = _FakeSource(pl.DataFrame())
+    team_data = pl.DataFrame(
+        {
+            "game_id": ["2026_02_MIN_CHI", "2026_02_MIN_CHI"],
+            "team": ["chi", "min"],
+            "season": [2026, 2026],
+            "week": [2, 2],
+            "gameweek": [202602, 202602],
+            "gameday": ["2026-09-20", "2026-09-20"],
+            "opponent": ["min", "chi"],
+            "is_home": [True, False],
+            "team_spread_line": [-3.0, 3.0],
+            "team_margin": [7.0, -7.0],
+            "rolling_offense_epa_per_play": [1.2, 0.8],
+        }
+    )
+
+    result = DataAccess(historical, current).get_game_data(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17), team_data=team_data
+    )
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["home_rolling_offense_epa_per_play"] == pytest.approx(1.2)
+    assert row["away_rolling_offense_epa_per_play"] == pytest.approx(0.8)
+    # The duplicate-column trap this design exists to avoid:
+    assert "home_team_spread_line" not in result.columns
+    assert "home_opponent" not in result.columns
+    assert "home_is_home" not in result.columns
+    assert "home_season" not in result.columns
+
+
+def test_get_game_data_without_team_data_returns_bare_schedule() -> None:
+    historical = _FakeSource(pl.DataFrame([_schedule_row(result=7, spread_line=-3.0)]))
+    current = _FakeSource(pl.DataFrame())
+
+    result = DataAccess(historical, current).get_game_data(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+    )
+
+    assert result.height == 1
+    assert "home_team" in result.columns
+    assert "rolling_offense_epa_per_play" not in result.columns
