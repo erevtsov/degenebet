@@ -21,6 +21,7 @@ from typing import Protocol
 import polars as pl
 
 from degenebet.data import cache, nflverse_cache, teams
+from degenebet.data.gameweek import Gameweek
 
 # SharpAPI's real full-name format, confirmed against live data 2026-09-17
 # (e.g. "Buffalo Bills", "Chicago Bears") -- not the abbreviated-city guess
@@ -65,18 +66,22 @@ _SHARPAPI_TEAM_CROSSWALK: dict[str, str] = {
 teams.assert_maps_to_canonical_teams(_SHARPAPI_TEAM_CROSSWALK)
 
 
-class DataSource(Protocol):
+class HistoricalDataSource(Protocol):
+    def fetch(self, start_week: Gameweek, end_week: Gameweek) -> pl.DataFrame: ...
+
+
+class CurrentDataSource(Protocol):
     def fetch(self, start_date: date, end_date: date) -> pl.DataFrame: ...
 
 
 class SharpApiSource:
-    """Current-odds source: one row per (home_team, away_team, gameday,
-    pulled_at) with `spread_line` in nflreadpy's sign convention (positive =
-    home favored) -- the median main-line home spread across sportsbooks
-    *within* a single snapshot. Snapshots are never collapsed across
-    `pulled_at` here: DataAccess.get_team_data is what picks the
-    as-of-correct snapshot per game, since only it knows the query's
-    as_of_date."""
+    """Current-odds source, implements CurrentDataSource: one row per
+    (home_team, away_team, gameday, pulled_at) with `spread_line` in
+    nflreadpy's sign convention (positive = home favored) -- the median
+    main-line home spread across sportsbooks *within* a single snapshot.
+    Snapshots are never collapsed across `pulled_at` here: DataAccess.get_team_data
+    is what picks the as-of-correct snapshot per game, since only it knows
+    the query's as_of_date."""
 
     def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
         raw = cache.load_all_snapshots("sharpapi")
@@ -122,13 +127,12 @@ class SharpApiSource:
 
 class NflverseSource:
     """Historical schedule source: reads the persisted merged schedules
-    store (nflverse_cache.py), never the network. nflreadpy's own team
-    codes are uppercase ("BUF") -- lowercased here to teams.CANONICAL_TEAMS'
-    convention, since this is the canonicalization boundary (raw cached
-    files keep the vendor's native format, same principle as
-    SharpApiSource)."""
+    store (nflverse_cache.py), never the network. Team codes and the
+    `gameweek` column are already normalized at the merge-cache write
+    boundary (nflverse_cache.sync_schedules) -- this is a pure read, no
+    transformation of its own."""
 
-    def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
+    def fetch(self, start_week: Gameweek, end_week: Gameweek) -> pl.DataFrame:
         merged = nflverse_cache.read_merged("schedules")
         if merged is None:
             raise RuntimeError(
@@ -136,11 +140,7 @@ class NflverseSource:
                 "or `degenebet sync` first."
             )
         return merged.filter(
-            (pl.col("gameday") >= start_date.isoformat())
-            & (pl.col("gameday") <= end_date.isoformat())
-        ).with_columns(
-            pl.col("home_team").str.to_lowercase(),
-            pl.col("away_team").str.to_lowercase(),
+            (pl.col("gameweek") >= start_week.as_int()) & (pl.col("gameweek") <= end_week.as_int())
         )
 
 
@@ -149,7 +149,7 @@ class DataAccess:
     point-in-time-correct view. See
     docs/superpowers/specs/2026-09-17-data-access-design.md."""
 
-    def __init__(self, historical: DataSource, current: DataSource) -> None:
+    def __init__(self, historical: HistoricalDataSource, current: CurrentDataSource) -> None:
         self.historical = historical
         self.current = current
 

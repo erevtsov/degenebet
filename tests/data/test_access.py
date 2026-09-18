@@ -7,6 +7,7 @@ import pytest
 
 from degenebet.data import nflverse_cache
 from degenebet.data.access import DataAccess, NflverseSource, SharpApiSource
+from degenebet.data.gameweek import Gameweek
 
 
 @pytest.fixture(autouse=True)
@@ -146,33 +147,18 @@ def test_sharpapi_crosswalk_covers_every_canonical_team() -> None:
 
 
 def _schedule_row(**overrides: object) -> dict[str, object]:
-    """A DataSource.fetch() row already in canonical form (lowercase team
-    codes) -- used to build _FakeSource fixtures standing in for a
-    DataSource's output, not for raw merged-store content."""
+    """A row as the merged schedules store holds it post-normalization
+    (Task 2) -- lowercase team codes, gameweek present. Used both to seed
+    the store directly and to build _FakeSource fixtures standing in for
+    a DataSource's output."""
     row: dict[str, object] = {
         "game_id": "2026_02_MIN_CHI",
         "season": 2026,
         "week": 2,
+        "gameweek": 202602,
         "gameday": "2026-09-20",
         "home_team": "chi",
         "away_team": "min",
-        "result": None,
-        "spread_line": None,
-    }
-    row.update(overrides)
-    return row
-
-
-def _raw_nflverse_schedule_row(**overrides: object) -> dict[str, object]:
-    """A row as nflreadpy actually returns it (uppercase team codes) --
-    used only to test NflverseSource's own raw-to-canonical transform."""
-    row: dict[str, object] = {
-        "game_id": "2026_02_MIN_CHI",
-        "season": 2026,
-        "week": 2,
-        "gameday": "2026-09-20",
-        "home_team": "CHI",
-        "away_team": "MIN",
         "result": None,
         "spread_line": None,
     }
@@ -188,12 +174,12 @@ class _FakeSource:
         return self.frame
 
 
-def test_nflverse_source_reads_merged_store_filtered_to_range() -> None:
+def test_nflverse_source_filters_by_gameweek_range() -> None:
     nflverse_cache.load_or_merge(
         pl.DataFrame(
             [
-                _raw_nflverse_schedule_row(gameday="2026-09-06"),
-                _raw_nflverse_schedule_row(gameday="2026-10-06"),
+                _schedule_row(game_id="g_w2", season=2026, week=2, gameweek=202602),
+                _schedule_row(game_id="g_w5", season=2026, week=5, gameweek=202605),
             ]
         ),
         name="schedules",
@@ -201,24 +187,9 @@ def test_nflverse_source_reads_merged_store_filtered_to_range() -> None:
         group_column="season",
     )
 
-    result = NflverseSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+    result = NflverseSource().fetch(Gameweek(2026, 1), Gameweek(2026, 3))
 
-    assert result.height == 1
-    assert result["gameday"][0] == "2026-09-06"
-
-
-def test_nflverse_source_lowercases_team_codes() -> None:
-    nflverse_cache.load_or_merge(
-        pl.DataFrame([_raw_nflverse_schedule_row()]),
-        name="schedules",
-        key_columns=["game_id"],
-        group_column="season",
-    )
-
-    result = NflverseSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
-
-    assert result["home_team"][0] == "chi"
-    assert result["away_team"][0] == "min"
+    assert result["game_id"].to_list() == ["g_w2"]
 
 
 def test_get_team_data_prefers_current_for_unplayed_game_even_with_stale_historical_line() -> None:
@@ -352,9 +323,10 @@ def test_get_team_data_end_to_end_with_real_sources(tmp_path: object) -> None:
     nflverse_cache.load_or_merge(
         pl.DataFrame(
             [
-                _raw_nflverse_schedule_row(
+                _schedule_row(
                     game_id="2026_03_MIN_CHI",
                     week=3,
+                    gameweek=202603,
                     gameday="2026-09-18",
                     result=None,
                     spread_line=None,
