@@ -22,6 +22,20 @@ def test_win_multiplier_positive_odds() -> None:
     assert _win_multiplier(120) == pytest.approx(1.2)
 
 
+def test_win_multiplier_boundary_odds_are_valid() -> None:
+    assert _win_multiplier(-100) == pytest.approx(1.0)
+    assert _win_multiplier(100) == pytest.approx(1.0)
+
+
+def test_win_multiplier_raises_on_odds_between_negative_100_and_100() -> None:
+    # American odds never fall strictly between -100 and +100 -- a value in
+    # that band (including 0) is not valid American odds and must not be
+    # silently scored as some payout.
+    for invalid_odds in (0, 1, -1, 99, -99):
+        with pytest.raises(ValueError, match="invalid American odds"):
+            _win_multiplier(invalid_odds)
+
+
 def test_flat_sizing_divides_pool_evenly() -> None:
     predictions = pl.DataFrame({"x": [1, 2, 3, 4]})
 
@@ -84,6 +98,32 @@ def test_backtest_run_edge_threshold_filters_games() -> None:
     assert result.roi_pct == 0.0
 
 
+def test_backtest_run_edge_exactly_at_threshold_places_no_bet() -> None:
+    # Strict > / < in _decide_bets means edge == edge_threshold is a
+    # boundary, not a bet -- pin that here rather than leaving it implicit.
+    predictions = pl.DataFrame(
+        {
+            "predicted_result": [10.0],
+            "result": [10.0],
+            "spread_line": [3.0],  # edge = 10 - 3 = 7, exactly the threshold
+            "home_spread_odds": [-140],
+            "away_spread_odds": [120],
+        },
+        schema={
+            "predicted_result": pl.Float64,
+            "result": pl.Float64,
+            "spread_line": pl.Float64,
+            "home_spread_odds": pl.Int64,
+            "away_spread_odds": pl.Int64,
+        },
+    )
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=7.0)
+
+    result = backtest.run(predictions)
+
+    assert result.bets_placed == 0
+
+
 def test_backtest_run_empty_predictions_returns_zeroed_result_not_an_error() -> None:
     empty = pl.DataFrame(
         {
@@ -109,6 +149,29 @@ def test_backtest_run_empty_predictions_returns_zeroed_result_not_an_error() -> 
     assert result.ats_win_rate == 0.0
     assert result.units_won == 0.0
     assert result.roi_pct == 0.0
+
+
+def test_backtest_run_raises_on_invalid_bet_odds() -> None:
+    predictions = pl.DataFrame(
+        {
+            "predicted_result": [10.0],
+            "result": [10.0],
+            "spread_line": [3.0],
+            "home_spread_odds": [50],  # invalid: strictly between -100 and 100
+            "away_spread_odds": [120],
+        },
+        schema={
+            "predicted_result": pl.Float64,
+            "result": pl.Float64,
+            "spread_line": pl.Float64,
+            "home_spread_odds": pl.Int64,
+            "away_spread_odds": pl.Int64,
+        },
+    )
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+
+    with pytest.raises(ValueError, match="invalid American odds"):
+        backtest.run(predictions)
 
 
 def test_decide_bets_raises_value_error_on_missing_required_column() -> None:
