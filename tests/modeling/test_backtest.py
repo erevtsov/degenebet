@@ -4,6 +4,8 @@ import polars as pl
 import pytest
 
 from degenebet.modeling.backtest import Backtest, FlatSizing, _win_multiplier
+from degenebet.modeling.splits import FoldPredictions
+from degenebet.modeling.spread_model import SpreadModel
 
 
 def test_win_multiplier_negative_odds() -> None:
@@ -173,3 +175,94 @@ def test_backtest_run_does_not_raise_on_null_odds_for_the_side_not_bet() -> None
 
     assert result.bets_placed == 1
     assert result.units_won == pytest.approx(0.7142857142857143)
+
+
+def _fold(predictions: pl.DataFrame) -> FoldPredictions:
+    # SpreadModel() here is an unfitted placeholder -- Backtest.run_folds
+    # never reads FoldPredictions.model or .in_sample, only .out_of_sample.
+    return FoldPredictions(model=SpreadModel(), in_sample=predictions, out_of_sample=predictions)
+
+
+def test_backtest_run_folds_pools_bet_count_weighted_not_averaged_across_folds() -> None:
+    # Fold 1: 1 bet, home, wins. Fold 2: 3 bets, home, 1 win + 2 losses (no
+    # pushes). Naive average of each fold's own ats_win_rate would be
+    # (1.0 + 1/3) / 2 = 0.667; the true bet-count-weighted pooled rate is
+    # 2 wins / 4 decided bets = 0.5. FlatSizing normalizes every fold's
+    # total stake to 1.0 regardless of bet count, so ats_win_rate (not
+    # stake-weighted at all) is what actually proves pooling counts real
+    # bets rather than averaging fold-level rates.
+    fold_1 = _fold(
+        pl.DataFrame(
+            {
+                "predicted_result": [10.0],
+                "result": [10.0],
+                "spread_line": [3.0],
+                "home_spread_odds": [-110],
+                "away_spread_odds": [-110],
+            }
+        )
+    )
+    fold_2 = _fold(
+        pl.DataFrame(
+            {
+                "predicted_result": [10.0, 10.0, 10.0],
+                "result": [10.0, 0.0, 0.0],
+                "spread_line": [3.0, 3.0, 3.0],
+                "home_spread_odds": [-110, -110, -110],
+                "away_spread_odds": [-110, -110, -110],
+            }
+        )
+    )
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+
+    result = backtest.run_folds([fold_1, fold_2])
+
+    assert result.ats_win_rate == pytest.approx(0.5)
+    assert result.by_fold is not None
+    assert result.by_fold.height == 2
+    assert result.by_fold["fold"].to_list() == [0, 1]
+    assert result.by_fold["ats_win_rate"].to_list() == pytest.approx([1.0, 1.0 / 3.0])
+
+
+def test_backtest_run_folds_raises_on_empty_folds_stream() -> None:
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+
+    with pytest.raises(ValueError, match="empty folds stream"):
+        backtest.run_folds([])
+
+
+def test_backtest_run_folds_scores_out_of_sample_only_never_in_sample() -> None:
+    # in_sample deliberately has a shape that would raise (null result) if
+    # run_folds ever touched it -- proving it doesn't.
+    in_sample = pl.DataFrame(
+        {
+            "predicted_result": [10.0],
+            "result": [None],
+            "spread_line": [3.0],
+            "home_spread_odds": [-140],
+            "away_spread_odds": [120],
+        },
+        schema={
+            "predicted_result": pl.Float64,
+            "result": pl.Float64,
+            "spread_line": pl.Float64,
+            "home_spread_odds": pl.Int64,
+            "away_spread_odds": pl.Int64,
+        },
+    )
+    out_of_sample = pl.DataFrame(
+        {
+            "game_id": ["A", "B", "C"],
+            "predicted_result": [10.0, -10.0, 10.0],
+            "result": [10.0, -10.0, 3.0],
+            "spread_line": [3.0, -3.0, 3.0],
+            "home_spread_odds": [-140, -140, -110],
+            "away_spread_odds": [120, 120, 100],
+        }
+    )
+    fold = FoldPredictions(model=SpreadModel(), in_sample=in_sample, out_of_sample=out_of_sample)
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+
+    result = backtest.run_folds([fold])
+
+    assert result.bets_placed == 3

@@ -5,10 +5,13 @@ docs/superpowers/specs/2026-09-18-backtest-rework-design.md.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast
 
 import polars as pl
+
+from degenebet.modeling.splits import FoldPredictions
 
 
 class _BetsSummary(TypedDict):
@@ -178,3 +181,28 @@ class Backtest:
         decided = _decide_bets(predictions, self.edge_threshold)
         bets_df = _score_bets(self.sizing_strategy.size(decided))
         return BacktestResult(bets=bets_df, by_fold=None, **_summarize_bets(bets_df))
+
+    def run_folds(self, folds: Iterable[FoldPredictions]) -> BacktestResult:
+        """Scores fold.out_of_sample only -- never in_sample; you don't
+        bet on training data. Raises ValueError on an empty folds stream
+        (zero folds total -- distinct from a fold with zero placed bets,
+        which is legitimate). Pooled stats computed by concatenating
+        every fold's scored bets and summarizing once -- never by
+        averaging each fold's already-computed stats, same principle
+        Efficacy.evaluate_folds established."""
+        materialized = list(folds)
+        if not materialized:
+            raise ValueError("Cannot run_folds on an empty folds stream.")
+
+        by_fold_rows: list[dict[str, object]] = []
+        all_bets: list[pl.DataFrame] = []
+        for fold_index, fold in enumerate(materialized):
+            decided = _decide_bets(fold.out_of_sample, self.edge_threshold)
+            bets_df = _score_bets(self.sizing_strategy.size(decided))
+            by_fold_rows.append({"fold": fold_index, **_summarize_bets(bets_df)})
+            all_bets.append(bets_df)
+
+        pooled = pl.concat(all_bets, how="vertical")
+        return BacktestResult(
+            bets=pooled, by_fold=pl.DataFrame(by_fold_rows), **_summarize_bets(pooled)
+        )
