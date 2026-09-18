@@ -63,6 +63,15 @@ def load_or_merge(
     fetch rather than let it pass unnoticed.
     """
     existing = read_merged(name)
+    if existing is not None:
+        missing = set(new.columns) - set(existing.columns)
+        if missing:
+            raise ValueError(
+                f"The persisted '{name}' store's schema predates a schema change "
+                f"(missing columns: {sorted(missing)}) -- delete "
+                f"cache_dir()/merged/{name}.parquet and re-sync."
+            )
+
     merged = merge_frames(existing, new, key_columns)
 
     if existing is not None and existing.height > 0:

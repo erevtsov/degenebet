@@ -109,6 +109,19 @@ def test_load_or_merge_allows_growth() -> None:
     assert result.height == 2
 
 
+def test_load_or_merge_raises_clear_error_when_existing_store_predates_schema_change() -> None:
+    existing = pl.DataFrame({"game_id": ["a"], "season": [2024], "result": [10]})
+    nflverse_cache.load_or_merge(
+        existing, name="schedules", key_columns=["game_id"], group_column="season"
+    )
+    new = pl.DataFrame({"game_id": ["b"], "season": [2024], "result": [20], "gameweek": [202401]})
+
+    with pytest.raises(ValueError, match="gameweek"):
+        nflverse_cache.load_or_merge(
+            new, name="schedules", key_columns=["game_id"], group_column="season"
+        )
+
+
 def test_sync_schedules_normalizes_team_codes_and_adds_gameweek(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
