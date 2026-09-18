@@ -6,7 +6,10 @@ merged into what's already there rather than trusting the raw fetch as a
 full replacement. See docs/superpowers/specs/2026-09-17-data-access-design.md
 ("Storage semantics") for why -- a naive overwrite would silently commit
 data loss if the upstream API ever starts limiting the historical range it
-returns.
+returns. The persisted store is always in canonical form: team codes are
+lowercased and a `gameweek` int column (season * 100 + week, matching
+Gameweek.as_int()) is added at write time, so readers never have to
+normalize either.
 """
 
 from __future__ import annotations
@@ -83,14 +86,26 @@ def load_or_merge(
 
 
 def sync_schedules(seasons: list[int] | None = None) -> pl.DataFrame:
-    """Fetch schedules from nflreadpy and merge into the persisted store."""
-    fresh = nflverse.load_schedules(seasons)
+    """Fetch schedules from nflreadpy, normalize team codes to lowercase,
+    add the `gameweek` sort/filter column, and merge into the persisted
+    store."""
+    fresh = nflverse.load_schedules(seasons).with_columns(
+        pl.col("home_team").str.to_lowercase(),
+        pl.col("away_team").str.to_lowercase(),
+        (pl.col("season") * 100 + pl.col("week")).alias("gameweek"),
+    )
     return load_or_merge(fresh, name="schedules", key_columns=["game_id"], group_column="season")
 
 
 def sync_team_stats(seasons: list[int] | None = None) -> pl.DataFrame:
-    """Fetch team stats from nflreadpy and merge into the persisted store."""
-    fresh = nflverse.load_team_stats(seasons)
+    """Fetch team stats from nflreadpy, normalize team codes to lowercase,
+    add the `gameweek` sort/filter column, and merge into the persisted
+    store."""
+    fresh = nflverse.load_team_stats(seasons).with_columns(
+        pl.col("team").str.to_lowercase(),
+        pl.col("opponent_team").str.to_lowercase(),
+        (pl.col("season") * 100 + pl.col("week")).alias("gameweek"),
+    )
     return load_or_merge(
         fresh, name="team_stats", key_columns=["game_id", "team"], group_column="season"
     )
