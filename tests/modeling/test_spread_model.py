@@ -177,3 +177,19 @@ def test_predict_raises_on_null_feature_column() -> None:
 
     with pytest.raises(ValueError, match="null values in feature columns.*away_turnover_margin"):
         model.predict(table)
+
+
+def test_residual_std_is_none_before_fit() -> None:
+    model = SpreadModel()
+
+    assert model.residual_std is None
+
+
+def test_residual_std_matches_the_value_fit_computed() -> None:
+    model = SpreadModel()
+    table = _noisy_table_with_spread()
+
+    model.fit(table)
+
+    assert model.residual_std is not None
+    assert model.residual_std > 0.0

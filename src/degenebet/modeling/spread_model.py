@@ -60,6 +60,12 @@ class SpreadModel:
         self.model: RegressorProtocol = model if model is not None else LinearRegression()
         self._residual_std: float | None = None
 
+    @property
+    def residual_std(self) -> float | None:
+        """The training residual spread computed by fit(), or None before
+        fit() is called."""
+        return self._residual_std
+
     def fit(self, model_table: pl.DataFrame) -> None:
         """Fits the injected regressor on the 6 feature columns against `result`."""
         _raise_if_null_features(model_table)
