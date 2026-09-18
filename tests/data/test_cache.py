@@ -83,3 +83,21 @@ def test_load_or_fetch_refetches_after_empty_cached_snapshot() -> None:
     provider.frame = _frame(datetime.now(UTC))
     cache.load_or_fetch(provider, "testsource")
     assert provider.calls == 2
+
+
+def test_load_all_snapshots_concatenates_every_retained_file(tmp_path: object) -> None:
+    provider = FakeProvider(_frame(datetime(2024, 1, 1, tzinfo=UTC)))
+    cache.load_or_fetch(provider, "testsource", force_refresh=True)
+    provider.frame = _frame(datetime(2024, 1, 2, tzinfo=UTC))
+    cache.load_or_fetch(provider, "testsource", force_refresh=True)
+
+    result = cache.load_all_snapshots("testsource")
+
+    assert result.height == 4  # two rows per snapshot, two snapshots
+    assert result["pulled_at"].n_unique() == 2
+
+
+def test_load_all_snapshots_returns_empty_frame_when_nothing_cached() -> None:
+    result = cache.load_all_snapshots("neversynced")
+
+    assert result.height == 0

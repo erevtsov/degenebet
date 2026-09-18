@@ -161,3 +161,67 @@ def test_fetch_raw_raises_on_missing_pagination_key() -> None:
 
     with pytest.raises(RuntimeError, match="pagination"):
         SharpAPIProvider().fetch_raw()
+
+
+def _headers(remaining: int, reset_at: float) -> dict[str, str]:
+    return {
+        "x-ratelimit-limit": "12",
+        "x-ratelimit-remaining": str(remaining),
+        "x-ratelimit-reset": str(reset_at),
+    }
+
+
+@respx.mock
+def test_fetch_raw_sleeps_when_rate_limit_nearly_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_at = 1_700_000_100.0
+    monkeypatch.setattr("degenebet.data.providers.sharpapi.time.time", lambda: 1_700_000_095.0)
+    sleeps: list[float] = []
+    monkeypatch.setattr("degenebet.data.providers.sharpapi.time.sleep", sleeps.append)
+
+    route = respx.get(_URL)
+    route.side_effect = [
+        httpx.Response(
+            200,
+            json=_payload([_row(event_id="1")], has_more=True, next_cursor="abc"),
+            headers=_headers(remaining=1, reset_at=reset_at),
+        ),
+        httpx.Response(
+            200,
+            json=_payload([_row(event_id="2")]),
+            headers=_headers(remaining=11, reset_at=reset_at),
+        ),
+    ]
+
+    frame = SharpAPIProvider().fetch_raw()
+
+    assert sorted(frame["event_id"].to_list()) == ["1", "2"]
+    assert sleeps == [5.0]  # reset_at (…100) - fake now (…095)
+
+
+@respx.mock
+def test_fetch_raw_does_not_sleep_with_budget_remaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("degenebet.data.providers.sharpapi.time.sleep", sleeps.append)
+
+    respx.get(_URL).mock(
+        return_value=httpx.Response(
+            200, json=_payload([_row()]), headers=_headers(remaining=11, reset_at=9_999_999_999.0)
+        )
+    )
+
+    SharpAPIProvider().fetch_raw()
+
+    assert sleeps == []
+
+
+@respx.mock
+def test_fetch_raw_tolerates_missing_rate_limit_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("degenebet.data.providers.sharpapi.time.sleep", sleeps.append)
+
+    respx.get(_URL).mock(return_value=httpx.Response(200, json=_payload([_row()])))
+
+    frame = SharpAPIProvider().fetch_raw()
+
+    assert frame.height == 1
+    assert sleeps == []

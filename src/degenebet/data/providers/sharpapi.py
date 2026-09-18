@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -11,6 +12,7 @@ from degenebet.config import sharpapi_key
 
 _BASE_URL = "https://api.sharpapi.io/api/v1/odds"
 _MARKETS = "moneyline,spread,total"
+_RATE_LIMIT_BUFFER = 1  # sleep before the budget hits 0, not after
 _SCHEMA: dict[str, type[pl.DataType]] = {
     "event_id": pl.Utf8,
     "home_team": pl.Utf8,
@@ -32,6 +34,22 @@ class SharpAPIProvider:
 
     def __init__(self, league: str = "nfl") -> None:
         self.league = league
+
+    @staticmethod
+    def _respect_rate_limit(headers: httpx.Headers) -> None:
+        """Sleep until the window resets if this response used up the
+        rate-limit budget, so the next paginated request doesn't 429.
+        A real fetch_raw() call can span more pages than the free tier's
+        per-minute budget allows -- confirmed against the live API."""
+        remaining = headers.get("x-ratelimit-remaining")
+        reset_at = headers.get("x-ratelimit-reset")
+        if remaining is None or reset_at is None:
+            return
+        if int(remaining) > _RATE_LIMIT_BUFFER:
+            return
+        sleep_for = float(reset_at) - time.time()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
 
     def fetch_raw(self) -> pl.DataFrame:
         """Return every current main-line odds row for ``self.league``.
@@ -57,6 +75,7 @@ class SharpAPIProvider:
                         "SharpAPI rate limit exceeded (429). Free tier allows 12 requests/minute."
                     )
                 response.raise_for_status()
+                self._respect_rate_limit(response.headers)
 
                 payload = response.json()
                 for key in ("data", "pagination"):

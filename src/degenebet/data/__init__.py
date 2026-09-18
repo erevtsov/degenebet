@@ -12,13 +12,15 @@ from datetime import timedelta
 
 import polars as pl
 
-from degenebet.data import cache, nflverse
+from degenebet.data import cache, nflverse, nflverse_cache
 from degenebet.data.providers.sharpapi import SharpAPIProvider
 
 load_schedules = nflverse.load_schedules
 load_player_stats = nflverse.load_player_stats
 load_team_stats = nflverse.load_team_stats
 load_rosters = nflverse.load_rosters
+sync_schedules = nflverse_cache.sync_schedules
+sync_team_stats = nflverse_cache.sync_team_stats
 
 
 def load_odds(
@@ -41,4 +43,6 @@ __all__ = [
     "load_team_stats",
     "load_rosters",
     "load_odds",
+    "sync_schedules",
+    "sync_team_stats",
 ]
