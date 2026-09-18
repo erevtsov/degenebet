@@ -3,7 +3,12 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from degenebet.modeling.backtest import Backtest, FlatSizing, _win_multiplier
+from degenebet.modeling.backtest import (
+    Backtest,
+    FlatSizing,
+    _win_multiplier,
+    compute_bankroll_trajectory,
+)
 from degenebet.modeling.splits import FoldPredictions
 from degenebet.modeling.spread_model import SpreadModel
 
@@ -266,3 +271,54 @@ def test_backtest_run_folds_scores_out_of_sample_only_never_in_sample() -> None:
     result = backtest.run_folds([fold])
 
     assert result.bets_placed == 3
+
+
+def test_compute_bankroll_trajectory_matches_motivating_example() -> None:
+    # Start with $50, lose $30 (a -60% fold return) -> $20 left.
+    by_fold = pl.DataFrame(
+        {"fold": [0], "bets_placed": [1], "ats_win_rate": [0.0], "units_won": [-0.6]}
+    )
+
+    trajectory = compute_bankroll_trajectory(by_fold, starting_bankroll=50.0)
+
+    assert trajectory.ending_bankroll == pytest.approx(20.0)
+    assert trajectory.total_pnl == pytest.approx(-30.0)
+    assert trajectory.by_fold["bankroll_before"].to_list() == pytest.approx([50.0])
+    assert trajectory.by_fold["pnl"].to_list() == pytest.approx([-30.0])
+    assert trajectory.by_fold["bankroll_after"].to_list() == pytest.approx([20.0])
+
+
+def test_compute_bankroll_trajectory_compounds_across_multiple_folds() -> None:
+    # Fold 0: -60% of $50 -> $20. Fold 1: +50% of $20 -> $30.
+    by_fold = pl.DataFrame({"fold": [0, 1], "units_won": [-0.6, 0.5]})
+
+    trajectory = compute_bankroll_trajectory(by_fold, starting_bankroll=50.0)
+
+    assert trajectory.by_fold["bankroll_before"].to_list() == pytest.approx([50.0, 20.0])
+    assert trajectory.by_fold["bankroll_after"].to_list() == pytest.approx([20.0, 30.0])
+    assert trajectory.ending_bankroll == pytest.approx(30.0)
+    assert trajectory.total_pnl == pytest.approx(-20.0)
+
+
+def test_compute_bankroll_trajectory_zero_return_fold_leaves_bankroll_unchanged() -> None:
+    by_fold = pl.DataFrame({"fold": [0], "units_won": [0.0]})
+
+    trajectory = compute_bankroll_trajectory(by_fold, starting_bankroll=100.0)
+
+    assert trajectory.ending_bankroll == pytest.approx(100.0)
+    assert trajectory.total_pnl == pytest.approx(0.0)
+
+
+def test_compute_bankroll_trajectory_total_wipeout_stays_at_zero() -> None:
+    # A fold where every bet loses has units_won == -1.0 exactly (100% of
+    # that week's staked pool lost) -- full-reinvestment sizing means this
+    # wipes the bankroll to $0, and it correctly stays $0 for every later
+    # fold regardless of that fold's own return (a real occurrence in the
+    # 2022-2024 real-data walk-forward run, not just a theoretical case).
+    by_fold = pl.DataFrame({"fold": [0, 1], "units_won": [-1.0, 0.9]})
+
+    trajectory = compute_bankroll_trajectory(by_fold, starting_bankroll=1000.0)
+
+    assert trajectory.by_fold["bankroll_after"].to_list() == pytest.approx([0.0, 0.0])
+    assert trajectory.ending_bankroll == pytest.approx(0.0)
+    assert trajectory.total_pnl == pytest.approx(-1000.0)

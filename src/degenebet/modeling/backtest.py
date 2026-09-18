@@ -206,3 +206,47 @@ class Backtest:
         return BacktestResult(
             bets=pooled, by_fold=pl.DataFrame(by_fold_rows), **_summarize_bets(pooled)
         )
+
+
+@dataclass(frozen=True)
+class BankrollTrajectory:
+    by_fold: pl.DataFrame
+    starting_bankroll: float
+    ending_bankroll: float
+    total_pnl: float
+
+
+def compute_bankroll_trajectory(
+    by_fold: pl.DataFrame, starting_bankroll: float
+) -> BankrollTrajectory:
+    """Sequentially compounds BacktestResult.by_fold's per-fold units_won
+    (a normalized fractional return under FlatSizing's evenly-divided
+    pool) into a dollar-denominated trajectory:
+    bankroll_after = bankroll_before * (1 + units_won). Requires by_fold
+    to already be in time order -- WalkForwardSplit's `fold` index (0, 1,
+    2, ... in gameweek order) guarantees this as long as by_fold isn't
+    re-sorted before calling this. Only correct for a SizingStrategy
+    whose allocation is linear in the pool size (FlatSizing qualifies;
+    see the design spec's Non-goals for what doesn't)."""
+    rows = by_fold.sort("fold").iter_rows(named=True)
+    bankroll = starting_bankroll
+    trajectory_rows: list[dict[str, float | int]] = []
+    for row in rows:
+        bankroll_before = bankroll
+        pnl = bankroll_before * row["units_won"]
+        bankroll = bankroll_before + pnl
+        trajectory_rows.append(
+            {
+                "fold": row["fold"],
+                "bankroll_before": bankroll_before,
+                "pnl": pnl,
+                "bankroll_after": bankroll,
+            }
+        )
+
+    return BankrollTrajectory(
+        by_fold=pl.DataFrame(trajectory_rows),
+        starting_bankroll=starting_bankroll,
+        ending_bankroll=bankroll,
+        total_pnl=bankroll - starting_bankroll,
+    )
