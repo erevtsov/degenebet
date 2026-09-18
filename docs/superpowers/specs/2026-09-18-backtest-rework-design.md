@@ -49,8 +49,20 @@ of the same concept in the codebase.
   from the last round, now what actually makes `run_folds`'s pooled stats
   and `by_fold` breakdown pay off (`SingleSplit` only ever produces one
   fold).
+- `compute_bankroll_trajectory`: a real, dollar-denominated, compounding
+  bankroll trajectory (week 2's stake sized off week 1's actual realized
+  outcome), computed as a cheap sequential pass *over already-computed,
+  independently-derived per-fold results* — not by threading a live
+  bankroll through fold computation itself. See "Compounding bankroll."
+- **Design property (not a hard implementation requirement this round):**
+  `run_folds()`'s per-fold work (fit, predict, decide, size, score) has no
+  dependency on any other fold's result — every fold could be computed in
+  parallel. Nothing in this spec mandates wiring up an actual parallel
+  executor now; the point is that the design doesn't preclude it, and
+  a sequential loop remains a correct (if not maximally fast) reference
+  implementation.
 - A new notebook, `notebooks/03_backtest.py`, running `Backtest` +
-  `WalkForwardSplit` against real data.
+  `WalkForwardSplit` against real data, including the bankroll trajectory.
 
 ## Non-goals
 
@@ -58,6 +70,14 @@ of the same concept in the codebase.
   `win_multiplier` is deliberately made available to `SizingStrategy.size()`
   (see Design) so a future Kelly-style strategy doesn't need a redesign to
   get the odds it needs.
+- A `SizingStrategy` whose stake allocation is *not* linear in the pool
+  size it's given (e.g. a fixed-dollar-amount-regardless-of-bankroll rule,
+  capped by what's left) — `compute_bankroll_trajectory` only composes
+  correctly with a linear rule like `FlatSizing`'s; making it work for a
+  non-linear rule is real future work, not attempted here.
+- Actually parallelizing `run_folds()`'s fold loop (e.g. via
+  `concurrent.futures`) — see the Goals note above; this round establishes
+  the design property, not the executor.
 - CLI wiring — still deferred, as in every prior round.
 - A live "generate this week's picks" feature (predicting on unplayed
   games). `Backtest` only ever scores *played* games — see the null-handling
@@ -79,9 +99,9 @@ of the same concept in the codebase.
   `FoldPredictions`/`iterate_folds`.
 - `src/degenebet/modeling/backtest.py` — full replace. `run_backtest` and
   the old `BacktestResult` are deleted; `SizingStrategy`, `FlatSizing`,
-  `BacktestResult` (new shape), `Backtest`, and four private helpers
-  (`_win_multiplier`, `_decide_bets`, `_score_bets`, `_summarize_bets`)
-  take their place.
+  `BacktestResult` (new shape), `Backtest`, four private helpers
+  (`_win_multiplier`, `_decide_bets`, `_score_bets`, `_summarize_bets`),
+  and `BankrollTrajectory`/`compute_bankroll_trajectory` take their place.
 - `tests/modeling/test_backtest.py` — rewritten against the new API.
 - `tests/modeling/test_splits.py` — gains `WalkForwardSplit` tests.
 - `tests/modeling/test_property_invariants.py` — the existing "backtest
@@ -101,19 +121,19 @@ Resolved through discussion, not the original sketch's wording (which used
 - **`size` / `SizingStrategy.size()`** — the action of deciding bet size.
   Not a stored value itself.
 - **`stake`** — the *output* of `size()`: the amount *risked* on one bet,
-  in normalized units where `1.0` = a baseline bet. `FlatSizing` returns
-  `1.0` for every placed bet — "risk the same amount every time there's an
-  edge," regardless of price. This is a deliberate departure from today's
-  `run_backtest`, which sizes its implicit unit to a target *win* amount
-  instead (risk `1.1` to win `1.0`, at -110) — under that older convention,
-  a win nets `+1.0` and a loss nets `-1.1`; under this spec's convention,
-  a `stake=1.0` win at -110 nets `+0.909` (`1.0 * win_multiplier`) and a
-  loss nets `-1.0` (`-stake`, always — you lose what you risked). Neither
-  convention is more "correct"; this spec picks amount-risked because
-  that's what "bet size" ordinarily means (bankroll-percentage and
-  Kelly-style sizing are always framed as risk amount, not target payout).
-  Only `units`'s magnitude changes relative to today's `run_backtest` —
-  no win/loss/push *decision* depends on which convention is used.
+  as a fraction of whatever pool `size()` was given to divide (see
+  `FlatSizing` below and "Compounding bankroll"). This is a deliberate
+  departure from today's `run_backtest`, which sizes its implicit unit to
+  a target *win* amount instead (risk `1.1` to win `1.0`, at -110) — under
+  that older convention, a win nets `+1.0` and a loss nets `-1.1`; under
+  this spec's convention, a `stake=s` win at -110 nets `+s * 0.909`
+  (`s * win_multiplier`) and a loss nets `-s` (`-stake`, always — you lose
+  what you risked). Neither convention is more "correct"; this spec picks
+  amount-risked because that's what "bet size" ordinarily means
+  (bankroll-percentage and Kelly-style sizing are always framed as risk
+  amount, not target payout). Only `units`'s magnitude changes relative to
+  today's `run_backtest` — no win/loss/push *decision* depends on which
+  convention is used.
 - **`win_multiplier`** — American odds converted to profit-per-unit-risked:
   `100/abs(odds)` for negative odds (e.g. -110 → 0.909), `odds/100` for
   positive odds (e.g. +120 → 1.2). Derived from `bet_odds` (below), not
@@ -126,11 +146,11 @@ Resolved through discussion, not the original sketch's wording (which used
   doesn't matter.
 - **`units`** — the *realized outcome* of one settled bet, only meaningful
   after the game's `result` is known: `+stake * win_multiplier` if won,
-  `-stake` if lost, `0` if push. **`FlatSizing`'s constant `stake` does not
-  mean the backtest ignores odds** — every bet is still scored at its own
-  game's real `win_multiplier` regardless of which `SizingStrategy` was
-  used. "Flat" describes the stake decision only; the payout calculation
-  is always market-real.
+  `-stake` if lost, `0` if push. **`FlatSizing` dividing its pool evenly
+  does not mean the backtest ignores odds** — every bet is still scored at
+  its own game's real `win_multiplier` regardless of which `SizingStrategy`
+  was used. "Flat" describes the stake-division rule only; the payout
+  calculation is always market-real.
 - **`units_won`** (`BacktestResult` field) — `sum(units)` across every
   placed bet.
 - **`roi_pct`** — `units_won / sum(stake) * 100`. Simpler than today's
@@ -158,11 +178,18 @@ class SizingStrategy(Protocol):
     against the real payout, not just the edge). Adds a stake column."""
 
 class FlatSizing:
-    """Every bet risks a constant 1.0 stake, regardless of edge or odds --
-    the backtest still scores each bet at its own real payout odds; only
-    the amount risked is flat."""
+    """Divides a normalized pool of 1.0 evenly across every bet in this
+    call -- stake_i = 1.0 / N for N placed bets, regardless of edge or
+    odds. This is "flat" in the sense of splitting a period's betting
+    pool evenly across that period's bets, not a constant per-bet
+    dollar amount (a prior draft of this spec used the latter; revised
+    after discussion, see "Compounding bankroll" below for why the pool
+    interpretation is what makes fold-independent computation possible).
+    The backtest still scores each bet at its own real payout odds;
+    FlatSizing only decides how the pool is split, never the payout."""
     def size(self, predictions: pl.DataFrame) -> pl.DataFrame:
-        return predictions.with_columns(pl.lit(1.0).alias("stake"))
+        n = predictions.height
+        return predictions.with_columns(pl.lit(1.0 / n if n > 0 else 0.0).alias("stake"))
 ```
 
 ### Null-handling: caller opts in explicitly, `Backtest` never filters
@@ -305,6 +332,79 @@ Every fold's `test` is non-empty by construction (`gameweeks` is derived
 directly from `data`'s own rows), unlike `SingleSplit`'s caller-supplied
 season list — no separate empty-test guard needed here.
 
+### Compounding bankroll
+
+Resolved through discussion. The request: size a `WalkForwardSplit` week's
+bets off the *actual, running* bankroll — start with `$50`, lose `$30` in
+week 1, week 2 only has `$20` to bet with. The tension: computing that
+requires knowing every prior week's real dollar outcome first, which
+looks like it forces `run_folds()`'s per-fold loop to run strictly in
+time order — directly opposed to the other goal, computing folds
+independently (each fold's fit/predict/decide/score has no dependency on
+any other fold, a design property worth preserving even if this round
+doesn't wire up an actual parallel executor for it).
+
+These resolve because `FlatSizing`'s "divide a normalized pool of `1.0`
+evenly across this fold's bets" rule is *linear* in the pool size: for a
+fixed set of bets, doubling the pool exactly doubles every bet's stake
+and therefore the fold's total P&L. That means a fold's *fractional*
+return (P&L as a fraction of whatever pool it was given) is identical
+whether the pool is `1.0` or `$50,000` — so `BacktestResult.by_fold`'s
+existing `units_won` column, computed once per fold with the normalized
+`1.0` pool (exactly what `run_folds()` already does, no new field needed),
+*is* that fold's fractional return, and it's valid to compute
+independently per fold, in any order, before any bankroll is known.
+
+Turning that sequence of fractional returns into an actual dollar
+trajectory is a second, separate, sequential pass — but a cheap one (pure
+arithmetic over a small per-fold table, not model fitting), so there's no
+real cost to keeping it sequential:
+
+```python
+@dataclass(frozen=True)
+class BankrollTrajectory:
+    by_fold: pl.DataFrame        # fold, bankroll_before, pnl, bankroll_after
+    starting_bankroll: float
+    ending_bankroll: float
+    total_pnl: float
+
+def compute_bankroll_trajectory(
+    by_fold: pl.DataFrame, starting_bankroll: float
+) -> BankrollTrajectory:
+    """Sequentially compounds BacktestResult.by_fold's per-fold units_won
+    (a normalized fractional return under FlatSizing's evenly-divided
+    pool) into a dollar-denominated trajectory:
+    bankroll_after = bankroll_before * (1 + units_won). Requires by_fold
+    to already be in time order -- WalkForwardSplit's `fold` index (0, 1,
+    2, ... in gameweek order) guarantees this as long as by_fold isn't
+    re-sorted before calling this. Verified against the motivating
+    example: starting_bankroll=50, week 1's units_won=-0.6 (lost $30 of
+    $50) -> bankroll_after = 50 * 0.4 = 20, matching "$20 left for week
+    2" exactly."""
+    ...
+```
+
+**This only works because `FlatSizing`'s rule is linear in the pool
+size** — a documented assumption, not something the types enforce. A
+future non-linear `SizingStrategy` (e.g. "bet a fixed $10 regardless of
+bankroll, capped by what's left") would not compose with
+`compute_bankroll_trajectory` the same way; that's explicitly out of
+scope here (see Non-goals).
+
+**Consequence for `BacktestResult`'s existing pooled stats:** under the
+old "constant `stake=1.0` per bet" `FlatSizing`, pooling by concatenating
+every fold's bets naturally weighted busier weeks (more qualifying games)
+more heavily. Under the new "divide a `1.0` pool per fold" rule, every
+fold contributes the same total stake (`1.0`) regardless of how many bets
+it placed, so the pooled `roi_pct`/`units_won` in `run_folds()`'s
+top-level `BacktestResult` now represent an **equal-weighted average
+across folds** (each gameweek counts the same, whether it had 2 games or
+14) — a real, deliberate consequence of the redefinition, not a bug. This
+is a genuinely different (and still useful) question from
+`compute_bankroll_trajectory`'s compounding view: "what's my average
+weekly return, treating every week the same" vs. "what's my actual dollar
+trajectory if I reinvest my whole bankroll every week."
+
 ## Data flow (usage example)
 
 ```python
@@ -320,7 +420,10 @@ backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
 
 folds = iterate_folds(model_table, split_strategy, lambda: SpreadModel())
 result = backtest.run_folds(folds)
-print(result.ats_win_rate, result.units_won, result.roi_pct)
+print(result.ats_win_rate, result.units_won, result.roi_pct)  # equal-weighted-across-folds view
+
+trajectory = compute_bankroll_trajectory(result.by_fold, starting_bankroll=1000.0)
+print(trajectory.ending_bankroll, trajectory.total_pnl)  # compounding, dollar-denominated view
 ```
 
 ## Testing
@@ -331,7 +434,9 @@ print(result.ats_win_rate, result.units_won, result.roi_pct)
   result/spread_line; bet_odds among placed bets only), edge/side decision
   correctness (home/away/none boundaries at `edge_threshold`), empty-input
   handling.
-- `FlatSizing`: stake is always `1.0`, including on a zero-row input.
+- `FlatSizing`: stake is `1.0 / N` for N placed bets in one call (e.g. 4
+  bets each get `0.25`), stakes sum to `1.0` for the call; `0.0` stake
+  (not a division error) on a zero-row input.
 - `Backtest.run()`: end-to-end hand-computed test using real, asymmetric
   odds (not -110 on both sides) verifying `units = stake * win_multiplier`
   on a win and `units = -stake` on a loss;
@@ -351,13 +456,23 @@ print(result.ats_win_rate, result.units_won, result.roi_pct)
 - `test_real_data_sanity.py` updated to the new `Backtest` API, same
   plausible-`ats_win_rate`-band sanity check against the frozen real
   fixture.
+- `compute_bankroll_trajectory`: the motivating worked example itself
+  (`starting_bankroll=50`, one fold with `units_won=-0.6` →
+  `bankroll_after=20`) as a hand-computed test; multi-fold compounding
+  (verify `bankroll_after` of fold N equals `bankroll_before` of fold
+  N+1, and `total_pnl == ending_bankroll - starting_bankroll`); a fold
+  with `units_won=0` (no bets placed, or all pushes) leaves the bankroll
+  unchanged.
 
 ## Notebook: `notebooks/03_backtest.py`
 
 Builds `model_table` via `DataAccess` + `compute_rolling_features` (same
 pattern as `01_data_loading.py`/`02_model_efficacy.py`), filters to played
 games explicitly (per the null-handling contract), then runs `Backtest` +
-`WalkForwardSplit` against a `SpreadModel` candidate, displaying
-`ats_win_rate`/`units_won`/`roi_pct` and a cumulative-P&L (equity curve)
-chart from `by_fold`. Reads from the local cache only, via `DataAccess` —
-never live `nflreadpy`/SharpAPI calls, same as the two prior notebooks.
+`WalkForwardSplit` against a `SpreadModel` candidate, displaying the
+pooled, equal-weighted `ats_win_rate`/`units_won`/`roi_pct`, and a real
+dollar equity-curve chart from `compute_bankroll_trajectory(result.by_fold,
+starting_bankroll=...)` — the actual compounding trajectory, not just the
+per-fold fractional returns. Reads from the local cache only, via
+`DataAccess` — never live `nflreadpy`/SharpAPI calls, same as the two prior
+notebooks.
