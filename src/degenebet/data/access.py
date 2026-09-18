@@ -2,14 +2,14 @@
 (SharpAPI) schedule data. See
 docs/superpowers/specs/2026-09-18-data-access-redesign.md.
 
-Cross-vendor join contract: every DataSource implementation must return
-`home_team`/`away_team` as codes from `teams.CANONICAL_TEAMS`, `gameday` as
-an ISO 8601 date string (YYYY-MM-DD), and `spread_line` (where present) with
-positive meaning home favored. These three are the actual join/comparison
-surface DataAccess relies on to stitch sources together -- the rest of each
-source's columns can differ; a historical source and an odds source are
-fundamentally different shapes, and full column parity between them isn't
-useful or required.
+Cross-vendor join contract: every HistoricalDataSource and CurrentDataSource
+implementation must return `home_team`/`away_team` as codes from
+`teams.CANONICAL_TEAMS`, `gameday` as an ISO 8601 date string (YYYY-MM-DD),
+and `spread_line` (where present) with positive meaning home favored. These
+three are the actual join/comparison surface DataAccess relies on to stitch
+sources together -- the rest of each source's columns can differ; a
+historical source and an odds source are fundamentally different shapes,
+and full column parity between them isn't useful or required.
 """
 
 from __future__ import annotations
@@ -352,9 +352,10 @@ class DataAccess:
         *,
         team_data: pl.DataFrame | None = None,
     ) -> pl.DataFrame:
-        """One row per game: game_id, season, week, gameweek, gameday,
-        home_team, away_team, result, spread_line. If `team_data` is given
-        (any team-indexed table keyed on game_id, team), its payload
+        """One row per game: the full merged schedule row (game_id, season,
+        week, gameweek, gameday, home_team, away_team, result, spread_line,
+        and any other columns the merged store carries). If `team_data` is
+        given (any team-indexed table keyed on game_id, team), its payload
         columns are joined in twice, prefixed home_/away_."""
         game_table = self._get_stitched_schedule(start_week, end_week, as_of_date)
         if team_data is None or game_table.height == 0:

@@ -174,3 +174,4 @@ def test_sync_team_stats_normalizes_team_codes_and_adds_gameweek(
     stored = nflverse_cache.read_merged("team_stats")
     assert stored is not None
     assert stored["team"].to_list() == ["buf"]
+    assert stored["gameweek"].to_list() == [202403]

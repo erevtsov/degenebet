@@ -193,6 +193,35 @@ def test_nflverse_source_filters_by_gameweek_range() -> None:
     assert result["game_id"].to_list() == ["g_w2"]
 
 
+def test_nflverse_source_includes_all_games_in_a_week_regardless_of_day() -> None:
+    """The bug that motivated this entire redesign (design spec, Decision
+    4): a Gameweek range spanning one week must include that week's
+    Thursday, Sunday, and Monday games, not just whichever day a naive
+    date-range filter happened to bound."""
+    nflverse_cache.load_or_merge(
+        pl.DataFrame(
+            [
+                _schedule_row(
+                    game_id="g_thu", gameday="2026-09-17", home_team="chi", away_team="min"
+                ),
+                _schedule_row(
+                    game_id="g_sun", gameday="2026-09-20", home_team="gb", away_team="det"
+                ),
+                _schedule_row(
+                    game_id="g_mon", gameday="2026-09-21", home_team="buf", away_team="kc"
+                ),
+            ]
+        ),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+
+    result = NflverseSource().fetch(Gameweek(2026, 2), Gameweek(2026, 2))
+
+    assert sorted(result["game_id"].to_list()) == ["g_mon", "g_sun", "g_thu"]
+
+
 def test_stitched_schedule_prefers_current_for_unplayed_game_even_with_stale_historical_line() -> (
     None
 ):
