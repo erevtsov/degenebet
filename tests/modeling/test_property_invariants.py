@@ -1,20 +1,23 @@
 """Property-based tests for invariants that would be expensive to get
-silently wrong: cover probability bounds, and backtest P&L reconciling
-under re-aggregation (per AGENTS.md's Automation & Verification mandate).
+silently wrong: cover probability bounds, backtest P&L reconciliation
+under re-aggregation, and Efficacy's directional_accuracy/r_squared bounds
+(per AGENTS.md's Automation & Verification mandate).
 
-Both tests below exercise the real production code paths
-(`SpreadModel.cover_probability` and `run_backtest`) rather than
-re-testing the scipy/polars primitives they're built on.
+All three tests below exercise the real production code paths
+(`SpreadModel.cover_probability`, `run_backtest`, and `Efficacy.evaluate`)
+rather than re-testing the scipy/polars primitives they're built on.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 import pytest
 from hypothesis import given, reject
 from hypothesis import strategies as st
 
 from degenebet.modeling.backtest import run_backtest
+from degenebet.modeling.efficacy import Efficacy
 from degenebet.modeling.spread_model import SpreadModel
 
 _FEATURE_COLUMNS = [
@@ -127,3 +130,30 @@ def test_backtest_pnl_reconciles_under_reaggregation(
     )
 
     assert weekly_sum == pytest.approx(full_result.units_won, abs=1e-9)
+
+
+_prediction_pair = st.tuples(_finite_float, _finite_float)
+
+
+@given(pairs=st.lists(_prediction_pair, min_size=2, max_size=20))
+def test_efficacy_directional_accuracy_and_r_squared_are_bounded(
+    pairs: list[tuple[float, float]],
+) -> None:
+    predicted = [p for p, _ in pairs]
+    actual = [a for _, a in pairs]
+    # A near-constant `actual` column makes r2_score's denominator (the sum
+    # of squared deviations from the mean) ~0, producing a huge or NaN R²
+    # from an essentially unrelated numerical fluke -- not what this
+    # property is about (boundedness under real variation), so discard
+    # those examples. A near-constant `predicted` column triggers scipy's
+    # ConstantInputWarning in pearsonr (undefined correlation) -- not a
+    # failure, but noise this property test doesn't need either.
+    if np.std(actual) < 1e-6 or np.std(predicted) < 1e-6:
+        reject()
+
+    predictions = pl.DataFrame({"predicted_result": predicted, "result": actual})
+
+    result = Efficacy().evaluate(predictions)
+
+    assert 0.0 <= result.metrics["directional_accuracy"] <= 1.0
+    assert result.metrics["r_squared"] <= 1.0 + 1e-9
