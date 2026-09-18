@@ -29,7 +29,7 @@ def _spread_row(**overrides: object) -> dict[str, object]:
         "event_id": "e1",
         "home_team": "Chicago Bears",
         "away_team": "Minnesota Vikings",
-        "market_type": "spread",
+        "market_type": "point_spread",
         "selection_type": "home",
         "line": -2.5,
         "event_start_time": "2026-09-20T17:00:00Z",
@@ -144,7 +144,42 @@ def test_fetch_uses_eastern_gameday_for_evening_kickoff(tmp_path: object) -> Non
 def test_sharpapi_crosswalk_covers_every_canonical_team() -> None:
     from degenebet.data import access, teams
 
-    teams.assert_maps_to_canonical_teams(access._SHARPAPI_TEAM_CROSSWALK)  # does not raise
+    teams.assert_maps_to_canonical_teams(access._SHARPAPI_MASCOT_TO_TEAM)  # does not raise
+
+
+def test_fetch_handles_abbreviated_city_prefix_variant(tmp_path: object) -> None:
+    # Live verification 2026-09-18: the real feed sends BOTH "Arizona
+    # Cardinals" and "ARI Cardinals" for the same team, sometimes in the
+    # same pull. Mascot-word extraction must handle both.
+    _write_snapshot(
+        tmp_path,
+        [_spread_row(home_team="ARI Cardinals", away_team="Chicago Bears", line=-2.5)],
+    )
+
+    result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    row = result.filter((pl.col("home_team") == "ari") & (pl.col("away_team") == "chi"))
+    assert row.height == 1
+    assert row["spread_line"][0] == pytest.approx(2.5)
+
+
+def test_fetch_excludes_period_specific_point_spread_markets(tmp_path: object) -> None:
+    # Live verification 2026-09-18: the real feed also returns
+    # "1st_half_point_spread", "2nd_quarter_point_spread", etc. -- an exact
+    # match on "point_spread" must exclude these, not just non-spread
+    # markets like moneyline.
+    _write_snapshot(
+        tmp_path,
+        [
+            _spread_row(),
+            _spread_row(market_type="1st_half_point_spread", line=-1.5),
+            _spread_row(market_type="2nd_quarter_point_spread", line=-1.0),
+        ],
+    )
+
+    result = SharpApiSource().fetch(date(2026, 9, 1), date(2026, 9, 30))
+
+    assert result.height == 1
 
 
 def _schedule_row(**overrides: object) -> dict[str, object]:
@@ -548,7 +583,7 @@ def test_get_team_data_left_joins_team_stats_null_for_unplayed_game() -> None:
     )
 
     result = DataAccess(historical, current).get_team_data(
-        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 20)
     )
 
     chi_row = result.filter(pl.col("team") == "chi")
@@ -577,7 +612,7 @@ def test_get_game_data_widens_team_data_with_home_away_prefixes() -> None:
     )
 
     result = DataAccess(historical, current).get_game_data(
-        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17), team_data=team_data
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 20), team_data=team_data
     )
 
     assert result.height == 1
@@ -623,11 +658,11 @@ def test_get_game_data_widens_real_get_team_data_output_without_duplicate_column
     )
     data_access = DataAccess(NflverseSource(), _FakeSource(pl.DataFrame()))
     team_data = data_access.get_team_data(
-        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 20)
     )
 
     result = data_access.get_game_data(
-        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17), team_data=team_data
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 20), team_data=team_data
     )
 
     assert result.height == 1
@@ -644,7 +679,7 @@ def test_get_game_data_without_team_data_returns_bare_schedule() -> None:
     current = _FakeSource(pl.DataFrame())
 
     result = DataAccess(historical, current).get_game_data(
-        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 20)
     )
 
     assert result.height == 1
