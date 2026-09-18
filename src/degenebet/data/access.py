@@ -187,14 +187,30 @@ class DataAccess:
             return historical
 
         earliest = str(historical["gameday"].min())
-        if as_of_date.isoformat() < earliest:
+
+        # The warning compares against the full persisted store's true
+        # earliest gameday, not `historical`'s own min -- `historical` is
+        # narrowed to the requested Gameweek range, so its min is just
+        # "earliest date in the games asked about." Querying an upcoming
+        # week (this system's central use case) would otherwise always
+        # false-positive, since today's date naturally precedes an upcoming
+        # game's date. Falls back to `historical`'s own min if the full
+        # store can't be read, so behavior degrades sensibly rather than
+        # crashing.
+        full_store = nflverse_cache.read_merged("schedules")
+        true_earliest = (
+            str(full_store["gameday"].min())
+            if full_store is not None and full_store.height > 0
+            else earliest
+        )
+        if as_of_date.isoformat() < true_earliest:
             # Informational only -- do NOT clamp as_of_date forward.
             # Clamping would admit current snapshots pulled after the true
             # requested as_of_date (a look-ahead leak); the honest behavior
             # for "as_of_date predates any cached history" is to proceed
             # with the original as_of_date.
             warnings.warn(
-                f"as_of_date {as_of_date} predates earliest cached history {earliest}.",
+                f"as_of_date {as_of_date} predates earliest cached history {true_earliest}.",
                 stacklevel=2,
             )
 

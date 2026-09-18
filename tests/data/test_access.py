@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, date, datetime
 
 import polars as pl
@@ -258,6 +259,17 @@ def test_stitched_schedule_falls_back_to_historical_when_current_missing_game() 
 
 
 def test_stitched_schedule_warns_when_as_of_before_earliest_history() -> None:
+    # The warning check reads the full persisted store's true earliest
+    # gameday (I4), not the narrowed `historical` fetch's own min -- seed a
+    # real merged schedules store whose earliest gameday matches
+    # historical's, so the scenario being tested (as_of predates *all*
+    # cached history) is genuinely represented.
+    nflverse_cache.load_or_merge(
+        pl.DataFrame([_schedule_row(gameday="2026-09-06", result=None, spread_line=1.0)]),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
     historical = _FakeSource(
         pl.DataFrame([_schedule_row(gameday="2026-09-06", result=None, spread_line=1.0)])
     )
@@ -286,6 +298,53 @@ def test_stitched_schedule_warns_when_as_of_before_earliest_history() -> None:
         )
 
     assert result["spread_line"][0] == pytest.approx(1.0)
+
+
+def test_stitched_schedule_does_not_warn_for_upcoming_gameweek() -> None:
+    # This is the system's central use case: "what should I bet on this
+    # week" -- querying an upcoming Gameweek whose narrowed `historical`
+    # fetch's own min gameday is naturally *after* today's as_of_date. The
+    # I4 bug compared against that narrowed min instead of the full store's
+    # true earliest gameday (here, far in the past), so it always
+    # false-positived on exactly this query shape.
+    nflverse_cache.load_or_merge(
+        pl.DataFrame(
+            [
+                _schedule_row(
+                    game_id="old",
+                    season=1999,
+                    week=1,
+                    gameweek=199901,
+                    gameday="1999-09-05",
+                )
+            ]
+        ),
+        name="schedules",
+        key_columns=["game_id"],
+        group_column="season",
+    )
+    historical = _FakeSource(
+        pl.DataFrame([_schedule_row(gameday="2026-09-20", result=None, spread_line=1.0)])
+    )
+    current = _FakeSource(
+        pl.DataFrame(
+            schema={
+                "home_team": pl.Utf8,
+                "away_team": pl.Utf8,
+                "gameday": pl.Utf8,
+                "spread_line": pl.Float64,
+                "pulled_at": pl.Datetime(time_zone="UTC"),
+            }
+        )
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = DataAccess(historical, current)._get_stitched_schedule(
+            Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+        )
+
+    assert result.height == 1
 
 
 def test_stitched_schedule_selects_snapshot_closest_to_but_not_after_as_of_date(
