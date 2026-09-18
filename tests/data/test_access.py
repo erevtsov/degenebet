@@ -192,7 +192,9 @@ def test_nflverse_source_filters_by_gameweek_range() -> None:
     assert result["game_id"].to_list() == ["g_w2"]
 
 
-def test_get_team_data_prefers_current_for_unplayed_game_even_with_stale_historical_line() -> None:
+def test_stitched_schedule_prefers_current_for_unplayed_game_even_with_stale_historical_line() -> (
+    None
+):
     historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=1.0)]))
     current = _FakeSource(
         pl.DataFrame(
@@ -206,14 +208,14 @@ def test_get_team_data_prefers_current_for_unplayed_game_even_with_stale_histori
         )
     )
 
-    result = DataAccess(historical, current).get_team_data(
-        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 17)
+    result = DataAccess(historical, current)._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
     )
 
     assert result["spread_line"][0] == pytest.approx(2.5)
 
 
-def test_get_team_data_historical_wins_for_settled_result() -> None:
+def test_stitched_schedule_historical_wins_for_settled_result() -> None:
     historical = _FakeSource(pl.DataFrame([_schedule_row(result=7, spread_line=1.0)]))
     current = _FakeSource(
         pl.DataFrame(
@@ -227,14 +229,14 @@ def test_get_team_data_historical_wins_for_settled_result() -> None:
         )
     )
 
-    result = DataAccess(historical, current).get_team_data(
-        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 17)
+    result = DataAccess(historical, current)._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
     )
 
     assert result["spread_line"][0] == pytest.approx(1.0)
 
 
-def test_get_team_data_falls_back_to_historical_when_current_missing_game() -> None:
+def test_stitched_schedule_falls_back_to_historical_when_current_missing_game() -> None:
     historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=1.0)]))
     current = _FakeSource(
         pl.DataFrame(
@@ -248,14 +250,14 @@ def test_get_team_data_falls_back_to_historical_when_current_missing_game() -> N
         )
     )
 
-    result = DataAccess(historical, current).get_team_data(
-        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 17)
+    result = DataAccess(historical, current)._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
     )
 
     assert result["spread_line"][0] == pytest.approx(1.0)
 
 
-def test_get_team_data_warns_when_as_of_before_earliest_history() -> None:
+def test_stitched_schedule_warns_when_as_of_before_earliest_history() -> None:
     historical = _FakeSource(
         pl.DataFrame([_schedule_row(gameday="2026-09-06", result=None, spread_line=1.0)])
     )
@@ -279,14 +281,14 @@ def test_get_team_data_warns_when_as_of_before_earliest_history() -> None:
     )
 
     with pytest.warns(UserWarning, match="predates earliest cached history"):
-        result = DataAccess(historical, current).get_team_data(
-            date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2020, 1, 1)
+        result = DataAccess(historical, current)._get_stitched_schedule(
+            Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2020, 1, 1)
         )
 
     assert result["spread_line"][0] == pytest.approx(1.0)
 
 
-def test_get_team_data_selects_snapshot_closest_to_but_not_after_as_of_date(
+def test_stitched_schedule_selects_snapshot_closest_to_but_not_after_as_of_date(
     tmp_path: object,
 ) -> None:
     from pathlib import Path
@@ -304,18 +306,18 @@ def test_get_team_data_selects_snapshot_closest_to_but_not_after_as_of_date(
     historical = _FakeSource(pl.DataFrame([_schedule_row(result=None, spread_line=None)]))
     current = SharpApiSource()
 
-    between_t1_and_t2 = DataAccess(historical, current).get_team_data(
-        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 16)
+    between_t1_and_t2 = DataAccess(historical, current)._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 16)
     )
-    at_or_after_t2 = DataAccess(historical, current).get_team_data(
-        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 18)
+    at_or_after_t2 = DataAccess(historical, current)._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 18)
     )
 
     assert between_t1_and_t2["spread_line"][0] == pytest.approx(2.5)
     assert at_or_after_t2["spread_line"][0] == pytest.approx(7.5)
 
 
-def test_get_team_data_end_to_end_with_real_sources(tmp_path: object) -> None:
+def test_stitched_schedule_end_to_end_with_real_sources(tmp_path: object) -> None:
     """Exercises the real NflverseSource + SharpApiSource + DataAccess chain
     together -- every other DataAccess test uses a fake DataSource, so this
     is the only test that would have caught C1/C2/C3 (wrong archive path,
@@ -353,8 +355,8 @@ def test_get_team_data_end_to_end_with_real_sources(tmp_path: object) -> None:
         ],
     )
 
-    result = DataAccess(NflverseSource(), SharpApiSource()).get_team_data(
-        date(2026, 9, 1), date(2026, 9, 30), as_of_date=date(2026, 9, 18)
+    result = DataAccess(NflverseSource(), SharpApiSource())._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 18)
     )
 
     row = result.filter(pl.col("game_id") == "2026_03_MIN_CHI")
@@ -362,3 +364,31 @@ def test_get_team_data_end_to_end_with_real_sources(tmp_path: object) -> None:
     assert row["home_team"][0] == "chi"
     assert row["away_team"][0] == "min"
     assert row["spread_line"][0] == pytest.approx(3.5)
+
+
+def test_stitched_schedule_reconciles_on_gameweek_not_exact_gameday() -> None:
+    # historical's gameday (2026-09-20, a Sunday) and current's derived
+    # gameday (2026-09-19, one day off -- simulating any date-precision
+    # discrepancy) disagree, but both belong to the same (home_team,
+    # away_team, season, week). The old exact-gameday join would silently
+    # miss this; gameweek-based reconciliation must not.
+    historical = _FakeSource(
+        pl.DataFrame([_schedule_row(gameday="2026-09-20", result=None, spread_line=1.0)])
+    )
+    current = _FakeSource(
+        pl.DataFrame(
+            {
+                "home_team": ["chi"],
+                "away_team": ["min"],
+                "gameday": ["2026-09-19"],
+                "spread_line": [2.5],
+                "pulled_at": [datetime(2026, 9, 17, tzinfo=UTC)],
+            }
+        )
+    )
+
+    result = DataAccess(historical, current)._get_stitched_schedule(
+        Gameweek(2026, 1), Gameweek(2026, 3), as_of_date=date(2026, 9, 17)
+    )
+
+    assert result["spread_line"][0] == pytest.approx(2.5)

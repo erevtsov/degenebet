@@ -1,6 +1,6 @@
 """DataAccess: point-in-time stitching of historical (nflreadpy) and current
 (SharpAPI) schedule data. See
-docs/superpowers/specs/2026-09-17-data-access-design.md.
+docs/superpowers/specs/2026-09-18-data-access-redesign.md.
 
 Cross-vendor join contract: every DataSource implementation must return
 `home_team`/`away_team` as codes from `teams.CANONICAL_TEAMS`, `gameday` as
@@ -79,9 +79,9 @@ class SharpApiSource:
     (home_team, away_team, gameday, pulled_at) with `spread_line` in
     nflreadpy's sign convention (positive = home favored) -- the median
     main-line home spread across sportsbooks *within* a single snapshot.
-    Snapshots are never collapsed across `pulled_at` here: DataAccess.get_team_data
-    is what picks the as-of-correct snapshot per game, since only it knows
-    the query's as_of_date."""
+    Snapshots are never collapsed across `pulled_at` here:
+    DataAccess._get_stitched_schedule is what picks the as-of-correct
+    snapshot per game, since only it knows the query's as_of_date."""
 
     def fetch(self, start_date: date, end_date: date) -> pl.DataFrame:
         raw = cache.load_all_snapshots("sharpapi")
@@ -106,7 +106,7 @@ class SharpApiSource:
             # Eastern-local calendar date, so an evening kickoff (~20% of
             # the weekly slate) needs the timezone conversion before
             # slicing off the date, or it lands on the wrong gameday and
-            # silently misses the join in DataAccess.get_team_data.
+            # silently misses the join in DataAccess._get_stitched_schedule.
             pl.col("event_start_time")
             .str.to_datetime(time_zone="UTC")
             .dt.convert_time_zone("America/New_York")
@@ -145,54 +145,93 @@ class NflverseSource:
 
 
 class DataAccess:
-    """Stitches historical and current schedule sources into one
-    point-in-time-correct view. See
-    docs/superpowers/specs/2026-09-17-data-access-design.md."""
+    """Fetches NFL data at whatever granularity a caller needs -- see
+    docs/superpowers/specs/2026-09-18-data-access-redesign.md."""
 
     def __init__(self, historical: HistoricalDataSource, current: CurrentDataSource) -> None:
         self.historical = historical
         self.current = current
 
-    def get_team_data(self, start_date: date, end_date: date, as_of_date: date) -> pl.DataFrame:
-        historical = self.historical.fetch(start_date, end_date)
-        current = self.current.fetch(start_date, end_date)
+    def _get_stitched_schedule(
+        self, start_week: Gameweek, end_week: Gameweek, as_of_date: date
+    ) -> pl.DataFrame:
+        """Game-indexed, point-in-time-correct: historical's own spread_line
+        for a settled game; current's (SharpAPI's) for an unplayed one,
+        whenever current covers it, even if historical already has an early
+        line for that same game; historical's line as the fallback when
+        current doesn't cover it. Shared by get_game_data and
+        get_team_data."""
+        historical = self.historical.fetch(start_week, end_week)
+        if historical.height == 0:
+            return historical
 
-        if historical.height > 0:
-            earliest = str(historical["gameday"].min())
-            if as_of_date.isoformat() < earliest:
-                # Informational only -- do NOT clamp as_of_date forward.
-                # Clamping would admit SharpAPI snapshots pulled after the
-                # true requested as_of_date (a look-ahead leak); the honest
-                # behavior for "as_of_date predates any cached history" is
-                # to proceed with the original as_of_date, which naturally
-                # yields an empty/limited `current` contribution below.
-                warnings.warn(
-                    f"as_of_date {as_of_date} predates earliest cached history {earliest}.",
-                    stacklevel=2,
-                )
+        earliest = str(historical["gameday"].min())
+        if as_of_date.isoformat() < earliest:
+            # Informational only -- do NOT clamp as_of_date forward.
+            # Clamping would admit current snapshots pulled after the true
+            # requested as_of_date (a look-ahead leak); the honest behavior
+            # for "as_of_date predates any cached history" is to proceed
+            # with the original as_of_date.
+            warnings.warn(
+                f"as_of_date {as_of_date} predates earliest cached history {earliest}.",
+                stacklevel=2,
+            )
+
+        min_date = date.fromisoformat(earliest)
+        max_date = date.fromisoformat(str(historical["gameday"].max()))
+        current = self.current.fetch(min_date, max_date)
 
         current_asof = (
             current.filter(pl.col("pulled_at").dt.date() <= as_of_date)
             if current.height > 0
             else current
         )
+
         if current_asof.height > 0:
+            # current has no season/week of its own -- resolve each row's
+            # (season, week) by matching (home_team, away_team) against
+            # historical and taking the closest gameday, disambiguating the
+            # rare case where a Gameweek range spans multiple seasons and
+            # the same team pairing appears more than once.
+            historical_games = historical.select(
+                "home_team",
+                "away_team",
+                pl.col("gameday").alias("historical_gameday"),
+                "season",
+                "week",
+            )
+            current_asof = (
+                current_asof.join(historical_games, on=["home_team", "away_team"], how="inner")
+                .with_columns(
+                    (pl.col("gameday").str.to_date() - pl.col("historical_gameday").str.to_date())
+                    .dt.total_days()
+                    .abs()
+                    .alias("_date_distance")
+                )
+                .sort("_date_distance")
+                .group_by(["home_team", "away_team", "gameday", "pulled_at"], maintain_order=True)
+                .first()
+                .drop("historical_gameday", "_date_distance")
+            )
             # Multiple snapshots may survive the as-of cutoff for the same
-            # game (SharpAPI is polled repeatedly); keep only the one
-            # closest to (but not after) as_of_date -- the latest pulled_at
-            # per game among those already filtered above.
+            # game; keep only the one closest to (but not after) as_of_date.
             current_asof = (
                 current_asof.sort("pulled_at")
-                .group_by(["home_team", "away_team", "gameday"], maintain_order=True)
+                .group_by(["season", "week", "home_team", "away_team"], maintain_order=True)
                 .last()
             )
 
         unresolved = historical.filter(pl.col("result").is_null()).select(
-            "game_id", "home_team", "away_team", "gameday"
+            "game_id", "home_team", "away_team", "season", "week"
         )
-        current_for_unresolved = current_asof.join(
-            unresolved, on=["home_team", "away_team", "gameday"], how="inner"
-        ).select("game_id", pl.col("spread_line").alias("current_spread_line"))
+        if current_asof.height > 0:
+            current_for_unresolved = current_asof.join(
+                unresolved, on=["home_team", "away_team", "season", "week"], how="inner"
+            ).select("game_id", pl.col("spread_line").alias("current_spread_line"))
+        else:
+            current_for_unresolved = pl.DataFrame(
+                schema={"game_id": pl.Utf8, "current_spread_line": pl.Float64}
+            )
 
         return (
             historical.join(current_for_unresolved, on="game_id", how="left")
