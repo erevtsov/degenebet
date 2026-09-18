@@ -62,9 +62,10 @@ exists to build on.
   `SplitStrategy` protocol, `SingleSplit`, `FoldPredictions`,
   `iterate_folds`.
 - `src/degenebet/modeling/efficacy.py` — new. `EfficacyResult`, `Efficacy`.
-- `src/degenebet/modeling/spread_model.py`, `backtest.py`, `features.py` —
-  **unchanged**. `SpreadModel` already structurally satisfies the `Model`
-  protocol below; nothing about it needs to change for this spec.
+- `src/degenebet/modeling/spread_model.py` — one small addition: `SpreadModel`
+  already structurally satisfies the `Model` protocol below, but gains a
+  public `residual_std` property (see `FoldPredictions` below for why).
+  `backtest.py`, `features.py` — unchanged.
 - `notebooks/02_model_efficacy.py` — new.
 
 ### `Model` protocol
@@ -99,12 +100,19 @@ having to know `Efficacy` exists.
 This is a deliberate simplification, not a placeholder: `TrainingResult`'s
 `residuals`/`weights`/`metadata` fields have no consumer in this spec's
 design (nothing in `iterate_folds` or `Efficacy` reads them), and inventing
-them now would be speculative. If a future second `Model` implementation
-genuinely needs richer fit output, `TrainingResult` gets designed against
-that real need then — not resurrected from an unvalidated sketch.
+them now would be speculative. Instead, `FoldPredictions` (below) exposes
+the fitted `model` itself — a caller who wants residuals, learned weights,
+or anything else diagnostic reaches directly into the concrete model
+(`fold.model.residual_std`, `fold.model.model.coef_` for the injected
+sklearn regressor's weights) rather than through a generic wrapper that
+could only ever describe a linear model's coefficients faithfully anyway.
+If a future need calls for something no concrete model can already answer
+this way, `TrainingResult` gets designed against that real need then — not
+resurrected from an unvalidated sketch.
 
-Consequence: `SpreadModel` and `backtest.py` need **zero changes** for this
-spec. This round is purely additive.
+Consequence: `backtest.py`/`features.py` need **zero changes** for this
+spec; `SpreadModel` gets one small addition (below). This round is
+otherwise purely additive.
 
 ### `Split`, `SplitStrategy`, `SingleSplit`
 
@@ -147,6 +155,7 @@ function" precedent from the `build_model_table` retirement.
 
 ```python
 class FoldPredictions(NamedTuple):
+    model: Model
     in_sample: pl.DataFrame
     out_of_sample: pl.DataFrame
 
@@ -164,10 +173,28 @@ def iterate_folds(
         model = model_factory()
         model.fit(split.train)
         yield FoldPredictions(
+            model=model,
             in_sample=model.predict(split.train),
             out_of_sample=model.predict(split.test),
         )
 ```
+
+`model` and `in_sample`/`out_of_sample` answer different questions, and
+neither substitutes for the other. `in_sample`/`out_of_sample` are the
+precomputed, single-source-of-truth prediction frames: `predict()` runs
+exactly once per side, here, so `Efficacy` (and later `Backtest`) never
+re-derive predictions themselves — re-deriving them would mean a pure
+scorer silently doing model inference, and would risk scoring against a
+different slice than what this loop actually fit on. `model` is for
+whatever predictions alone can't answer — residuals, learned weights, any
+other diagnostic — and costs nothing extra to expose, since it's already
+been created and fit either way.
+
+This is also why `SpreadModel` gains a public `residual_std` property:
+today `_residual_std` is a private attribute read only internally by
+`cover_probability`. Now that `fold.model.residual_std` is a legitimate
+external access path via `FoldPredictions`, it needs to be public, not
+reached into as an implementation detail.
 
 ### `Efficacy`
 
@@ -250,7 +277,8 @@ stays human-driven, above `Efficacy`, exactly as sketched.
   yields a zero-row frame (not an error), correct season partition.
 - `iterate_folds`: a trivial fake `Model` test double proving each fold
   gets a fresh model instance (via `model_factory`) and that `fit`/`predict`
-  are called with the right frames.
+  are called with the right frames — including that `FoldPredictions.model`
+  is that exact fresh instance, not the same one reused across folds.
 - `Efficacy.evaluate()`: hand-computed RMSE/R²/directional-accuracy/IC on
   small fixtures with known expected values (real small Polars DataFrames,
   same convention as `test_spread_model.py`/`test_features.py` — never
