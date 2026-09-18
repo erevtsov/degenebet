@@ -6,7 +6,7 @@ docs/superpowers/specs/2026-09-18-modeling-efficacy-foundation-design.md.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import NamedTuple, Protocol
 
 import polars as pl
@@ -51,3 +51,42 @@ class SingleSplit:
             raise ValueError(f"No rows in data for train_seasons={self.train_seasons}")
 
         yield Split(train=train, test=test)
+
+
+class Model(Protocol):
+    def fit(self, train_data: pl.DataFrame) -> None: ...
+    def predict(self, data: pl.DataFrame) -> pl.DataFrame: ...
+
+
+class FoldPredictions(NamedTuple):
+    """One fold's fit model plus its predictions on both sides of the
+    split. `in_sample`/`out_of_sample` are the precomputed,
+    single-source-of-truth prediction frames -- Efficacy (and, later,
+    Backtest) score these directly rather than re-deriving predictions
+    themselves. `model` is for whatever predictions alone can't answer
+    (residuals, learned weights, any other diagnostic); it costs nothing
+    extra to expose since it's already been created and fit either way."""
+
+    model: Model
+    in_sample: pl.DataFrame
+    out_of_sample: pl.DataFrame
+
+
+def iterate_folds(
+    data: pl.DataFrame,
+    split_strategy: SplitStrategy,
+    model_factory: Callable[[], Model],
+) -> Iterator[FoldPredictions]:
+    """The one shared fit/predict orchestration -- neither Efficacy nor
+    (later) Backtest owns fitting or fold-looping itself. model_factory
+    (not a fixed Model instance) matters because a stateful Model like
+    SpreadModel needs a fresh instance per fold so fitted state never
+    leaks across folds."""
+    for split in split_strategy.splits(data):
+        model = model_factory()
+        model.fit(split.train)
+        yield FoldPredictions(
+            model=model,
+            in_sample=model.predict(split.train),
+            out_of_sample=model.predict(split.test),
+        )
