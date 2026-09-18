@@ -31,6 +31,9 @@ coverage.xml
 # Ruff
 .ruff_cache/
 
+# marimo
+notebooks/__marimo__/
+
 # IDEs
 .idea/
 .vscode/
