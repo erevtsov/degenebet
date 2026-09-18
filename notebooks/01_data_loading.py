@@ -12,12 +12,13 @@ def _():
     import marimo as mo
     import polars as pl
 
-    from degenebet.data import nflverse_cache
     from degenebet.data.access import DataAccess, NflverseSource, SharpApiSource
+    from degenebet.data.gameweek import Gameweek
     from degenebet.modeling.features import build_model_table, compute_rolling_features
 
     return (
         DataAccess,
+        Gameweek,
         NflverseSource,
         SharpApiSource,
         alt,
@@ -25,7 +26,6 @@ def _():
         compute_rolling_features,
         date,
         mo,
-        nflverse_cache,
         pl,
     )
 
@@ -35,14 +35,16 @@ def _(mo):
     mo.md(r"""
     # Loading and exploring NFL data
 
-    Schedules load through `DataAccess` — the production point-in-time read
-    layer, stitching historical (`nflreadpy`) and current (SharpAPI) lines.
-    Team stats have no `DataAccess` source of their own (by design: future
-    games have no stats to stitch against), so those read straight from the
-    local merged cache. Neither path ever calls `nflreadpy` or SharpAPI live;
-    run `degenebet fetch schedules`/`degenebet fetch team-stats` (or
-    `degenebet sync` to pull the scheduled-fetch workflow's data) first to
-    populate the cache.
+    Everything loads through `DataAccess` — the production point-in-time
+    read layer, stitching historical (`nflreadpy`) and current (SharpAPI)
+    lines, and (for `get_team_data`) the raw team_stats store. It never
+    calls `nflreadpy`/SharpAPI live; run `degenebet fetch schedules`/
+    `degenebet fetch team-stats` (or `degenebet sync`) first to populate
+    the local cache.
+
+    `DataAccess` is indexed by `Gameweek(season, week)`, not calendar
+    dates — see `docs/superpowers/specs/2026-09-18-data-access-redesign.md`
+    for why (naive date filtering can drop a week's Thursday/Monday game).
     """)
     return
 
@@ -54,35 +56,21 @@ def _():
 
 
 @app.cell
-def _(DataAccess, NflverseSource, SEASONS, SharpApiSource, date, pl):
+def _(DataAccess, Gameweek, NflverseSource, SEASONS, SharpApiSource, date):
     _access = DataAccess(NflverseSource(), SharpApiSource())
-    _schedules = _access.get_team_data(
-        start_date=date(min(SEASONS), 1, 1),
-        end_date=date(max(SEASONS) + 1, 3, 1),  # NFL seasons run into Feb/March
-        as_of_date=date.today(),
-    )
-    schedules = _schedules.filter(pl.col("season").is_in(SEASONS))
-    schedules.head()
-    return (schedules,)
+    _start_week = Gameweek(min(SEASONS), 1)
+    _end_week = Gameweek(max(SEASONS), 22)  # NFL seasons run through the Super Bowl
 
+    # get_team_data: one row per (game_id, team) -- schedule/spread context
+    # from that team's own perspective, plus the raw team_stats row
+    # left-joined in. This is the shape compute_rolling_features expects.
+    team_data = _access.get_team_data(_start_week, _end_week, as_of_date=date.today())
 
-@app.cell
-def _(SEASONS, nflverse_cache, pl):
-    _team_stats = nflverse_cache.read_merged("team_stats")
-    if _team_stats is None:
-        raise RuntimeError(
-            "No team_stats in the local cache -- run `degenebet fetch team-stats` "
-            "or `degenebet sync` first."
-        )
-    # DataAccess/NflverseSource lowercase team codes at their read boundary
-    # (teams.CANONICAL_TEAMS convention); match that here so the join in
-    # build_model_table lines up against schedules' home_team/away_team.
-    team_stats = _team_stats.filter(pl.col("season").is_in(SEASONS)).with_columns(
-        pl.col("team").str.to_lowercase(),
-        pl.col("opponent_team").str.to_lowercase(),
-    )
-    team_stats.head()
-    return (team_stats,)
+    # get_game_data: one row per game -- the shape build_model_table expects.
+    schedules = _access.get_game_data(_start_week, _end_week, as_of_date=date.today())
+
+    team_data.head()
+    return schedules, team_data
 
 
 @app.cell
@@ -94,8 +82,8 @@ def _(mo):
 
 
 @app.cell
-def _(compute_rolling_features, team_stats):
-    rolling = compute_rolling_features(team_stats)
+def _(compute_rolling_features, team_data):
+    rolling = compute_rolling_features(team_data)
     rolling.head()
     return (rolling,)
 
@@ -153,9 +141,7 @@ def _(alt, analysis_table, mo):
             title="Does offensive EPA edge predict the actual margin?", width=500, height=350
         )
     )
-    _trend = _scatter.transform_regression("net_offense_epa_edge", "result").mark_line(
-        color="red"
-    )
+    _trend = _scatter.transform_regression("net_offense_epa_edge", "result").mark_line(color="red")
     mo.ui.altair_chart(_scatter + _trend)
     return
 
@@ -176,9 +162,7 @@ def _(alt, analysis_table, mo, pl):
         .properties(title="Distribution of home cover margin (ATS)", width=500, height=300)
     )
     _rule = (
-        alt.Chart(pl.DataFrame({"x": [0]}))
-        .mark_rule(color="red", strokeDash=[4, 4])
-        .encode(x="x")
+        alt.Chart(pl.DataFrame({"x": [0]})).mark_rule(color="red", strokeDash=[4, 4]).encode(x="x")
     )
     mo.ui.altair_chart(_hist + _rule)
     return
