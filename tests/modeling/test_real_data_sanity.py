@@ -52,8 +52,9 @@ from pathlib import Path
 
 import polars as pl
 
+from degenebet.data.access import _widen_with_team_data
 from degenebet.modeling.backtest import run_backtest
-from degenebet.modeling.features import build_model_table, compute_rolling_features
+from degenebet.modeling.features import compute_rolling_features
 
 _FIXTURES_DIR = Path(__file__).parent / "_fixtures"
 
@@ -70,7 +71,20 @@ def test_backtest_ats_win_rate_is_plausible_against_real_data() -> None:
     schedules = pl.read_parquet(_FIXTURES_DIR / "real_schedules_2022_2024.parquet")
 
     rolling_features = compute_rolling_features(team_stats)
-    model_table = build_model_table(schedules, rolling_features)
+    # _widen_with_team_data always left-joins (a game where one team lacks
+    # enough rolling history gets null feature columns, not a dropped row)
+    # -- drop those explicitly, same games build_model_table's old inner
+    # join used to drop, but visibly here rather than inside a shared join.
+    model_table = _widen_with_team_data(schedules, rolling_features).drop_nulls(
+        subset=[
+            "home_offense_epa",
+            "home_defense_epa_allowed",
+            "home_turnover_margin",
+            "away_offense_epa",
+            "away_defense_epa_allowed",
+            "away_turnover_margin",
+        ]
+    )
 
     result = run_backtest(model_table, train_seasons=[2022, 2023], test_seasons=[2024])
 
