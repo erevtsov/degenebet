@@ -24,7 +24,11 @@ class _BetsSummary(TypedDict):
 def _win_multiplier(odds: int) -> float:
     """American odds -> profit per unit risked. Negative odds (e.g. -110,
     risk $1.10 to win $1.00): 100/abs(odds). Positive odds (e.g. +120,
-    risk $100 to win $120): odds/100."""
+    risk $100 to win $120): odds/100. American odds never fall strictly
+    between -100 and +100 -- rejecting that band catches malformed odds
+    (e.g. 0) as a loud error instead of a silently wrong payout."""
+    if -100 < odds < 100:
+        raise ValueError(f"invalid American odds: {odds} -- must be <= -100 or >= 100.")
     return 100.0 / abs(odds) if odds < 0 else odds / 100.0
 
 

@@ -1,11 +1,13 @@
 """Property-based tests for invariants that would be expensive to get
 silently wrong: cover probability bounds, backtest P&L reconciliation
-under re-aggregation, and Efficacy's directional_accuracy/r_squared bounds
-(per AGENTS.md's Automation & Verification mandate).
+under re-aggregation, `Backtest.run_folds`' pooled-not-averaged invariant,
+and Efficacy's directional_accuracy/r_squared bounds (per AGENTS.md's
+Automation & Verification mandate).
 
-All three tests below exercise the real production code paths
-(`SpreadModel.cover_probability`, `Backtest.run`, and `Efficacy.evaluate`)
-rather than re-testing the scipy/polars primitives they're built on.
+The tests below exercise the real production code paths
+(`SpreadModel.cover_probability`, `Backtest.run`/`run_folds`, and
+`Efficacy.evaluate`) rather than re-testing the scipy/polars primitives
+they're built on.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from hypothesis import strategies as st
 
 from degenebet.modeling.backtest import Backtest, FlatSizing
 from degenebet.modeling.efficacy import Efficacy
-from degenebet.modeling.splits import SingleSplit, iterate_folds
+from degenebet.modeling.splits import FoldPredictions, SingleSplit, iterate_folds
 from degenebet.modeling.spread_model import SpreadModel
 
 _FEATURE_COLUMNS = [
@@ -145,6 +147,80 @@ def test_backtest_pnl_reconciles_under_reaggregation(
     )
 
     assert weekly_sum == pytest.approx(full_result.units_won, abs=1e-9)
+
+
+_pred_row = st.tuples(_small_float, _small_float, _small_float, _odds_int, _odds_int)
+# predicted_result, result, spread_line, home_spread_odds, away_spread_odds --
+# everything Backtest needs to decide and score a bet, independent of
+# SpreadModel/feature columns (this property is about run_folds' pooling,
+# not about model fitting).
+
+
+def _predictions_frame(rows: list[tuple[float, float, float, int, int]]) -> pl.DataFrame:
+    n = len(rows)
+    # Explicit schema even (especially) when n == 0 -- an all-empty list
+    # infers Null dtype, which then fails pl.concat inside run_folds when
+    # vstacked against a non-empty fold's real-typed frame. That's a test
+    # fixture pitfall, not a Backtest bug (see test_backtest.py's own
+    # empty-predictions test for the same explicit-schema pattern).
+    return pl.DataFrame(
+        {
+            "game_id": [f"g{i}" for i in range(n)],
+            "predicted_result": [row[0] for row in rows],
+            "result": [row[1] for row in rows],
+            "spread_line": [row[2] for row in rows],
+            "home_spread_odds": [int(row[3]) for row in rows],
+            "away_spread_odds": [int(row[4]) for row in rows],
+        },
+        schema={
+            "game_id": pl.String,
+            "predicted_result": pl.Float64,
+            "result": pl.Float64,
+            "spread_line": pl.Float64,
+            "home_spread_odds": pl.Int64,
+            "away_spread_odds": pl.Int64,
+        },
+    )
+
+
+def _placeholder_fold(rows: list[tuple[float, float, float, int, int]]) -> FoldPredictions:
+    # Backtest.run_folds only ever reads .out_of_sample -- .model and
+    # .in_sample are never touched, so an unfitted SpreadModel placeholder
+    # and a throwaway in_sample frame are fine here (mirrors test_backtest.py's
+    # own _fold helper).
+    frame = _predictions_frame(rows)
+    return FoldPredictions(model=SpreadModel(), in_sample=frame, out_of_sample=frame)
+
+
+@given(folds_rows=st.lists(st.lists(_pred_row, min_size=0, max_size=6), min_size=1, max_size=5))
+def test_backtest_run_folds_pools_by_concatenation_not_by_averaging_per_fold_stats(
+    folds_rows: list[list[tuple[float, float, float, int, int]]],
+) -> None:
+    # run_folds' own docstring/design promise: pooled stats come from
+    # concatenating every fold's scored bets and summarizing once, never
+    # from averaging each fold's already-computed stats. Check both
+    # pooled numbers this property test can verify algebraically:
+    # units_won (a sum, so pooling-by-concatenation == summing per-fold
+    # sums) and ats_win_rate (bet-count-weighted, so pooling-by-concatenation
+    # == total wins / total decided bets, NOT the average of per-fold
+    # win rates -- the discriminator this property is really about).
+    folds = [_placeholder_fold(rows) for rows in folds_rows]
+    backtest = Backtest(sizing_strategy=FlatSizing(), edge_threshold=1.0)
+
+    pooled = backtest.run_folds(folds)
+    per_fold_results = [backtest.run(fold.out_of_sample) for fold in folds]
+
+    assert pooled.units_won == pytest.approx(sum(r.units_won for r in per_fold_results), abs=1e-9)
+
+    total_decided = 0
+    total_won = 0
+    for result in per_fold_results:
+        decided = result.bets.filter(~pl.col("push")) if result.bets.height > 0 else result.bets
+        total_decided += decided.height
+        total_won += int(decided["won"].sum()) if decided.height > 0 else 0
+    expected_ats_win_rate = total_won / total_decided if total_decided > 0 else 0.0
+
+    assert pooled.ats_win_rate == pytest.approx(expected_ats_win_rate, abs=1e-9)
 
 
 _prediction_pair = st.tuples(_finite_float, _finite_float)
