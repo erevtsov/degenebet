@@ -1,10 +1,11 @@
 """Property-based tests for invariants that would be expensive to get
-silently wrong: cover probability bounds, and backtest P&L reconciling
-under re-aggregation (per AGENTS.md's Automation & Verification mandate).
+silently wrong: cover probability bounds, backtest P&L reconciliation
+under re-aggregation, and Efficacy's directional_accuracy/r_squared bounds
+(per AGENTS.md's Automation & Verification mandate).
 
-Both tests below exercise the real production code paths
-(`SpreadModel.cover_probability` and `run_backtest`) rather than
-re-testing the scipy/polars primitives they're built on.
+All three tests below exercise the real production code paths
+(`SpreadModel.cover_probability`, `run_backtest`, and `Efficacy.evaluate`)
+rather than re-testing the scipy/polars primitives they're built on.
 """
 
 from __future__ import annotations

@@ -20,6 +20,8 @@ class Split(NamedTuple):
 
 
 class SplitStrategy(Protocol):
+    """Produces one or more (train, test) partitions of a model table."""
+
     def splits(self, data: pl.DataFrame) -> Iterator[Split]: ...
 
 
@@ -35,8 +37,13 @@ class SingleSplit:
     def splits(self, data: pl.DataFrame) -> Iterator[Split]:
         """Raises ValueError if train_seasons and test_seasons overlap
         (leakage), or if the train filter is empty (nothing to fit on).
-        An empty test filter is not an error (e.g. an in-progress season
-        with no played games yet) -- yields a zero-row test frame."""
+        An empty test filter is not an error here -- yields a zero-row
+        test frame (e.g. for an in-progress season with no played games
+        yet). Note: iterate_folds does not special-case this -- a
+        zero-row test frame is passed straight to model.predict(), whose
+        behavior on empty input is up to the concrete Model (e.g.
+        SpreadModel raises, via sklearn, since LinearRegression requires
+        at least one sample)."""
         overlap = set(self.train_seasons) & set(self.test_seasons)
         if overlap:
             raise ValueError(
@@ -54,6 +61,10 @@ class SingleSplit:
 
 
 class Model(Protocol):
+    """Minimal fit/predict interface iterate_folds depends on -- any
+    concrete predictor (e.g. SpreadModel) satisfies this structurally,
+    with no explicit inheritance required."""
+
     def fit(self, train_data: pl.DataFrame) -> None: ...
     def predict(self, data: pl.DataFrame) -> pl.DataFrame: ...
 

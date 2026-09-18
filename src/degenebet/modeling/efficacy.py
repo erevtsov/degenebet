@@ -18,6 +18,11 @@ from degenebet.modeling.splits import FoldPredictions
 
 @dataclass(frozen=True)
 class EfficacyResult:
+    """metrics is pooled and out-of-sample only (never averaged across
+    folds); by_fold is long format (one row per fold x sample) and the
+    only place in-sample figures appear, for the walk-forward-efficiency
+    comparison."""
+
     metrics: dict[str, float]
     by_fold: pl.DataFrame | None
 
