@@ -14,6 +14,8 @@
 - `uv run ruff check src/ tests/` — lint
 - `uv run mypy` — type-check
 - `uv run degenebet fetch <table>` — warm the local cache
+- `uv sync --extra notebooks` — install marimo/altair for notebook work
+- `uv run marimo edit notebooks/<name>.py` — open a notebook interactively
 
 ## Automation & Verification
 - `just check` is the single CI-authoritative gate — `.github/workflows/ci.yml` runs this exact command, nothing more, nothing less. Locally and in CI it always means: `ruff check src/ tests/`, `ruff format --check src/ tests/`, `mypy`, `pytest`, in that order, fail-fast.
@@ -33,6 +35,8 @@
 - `src/degenebet/data/providers/sharpapi.py` — `SharpAPIProvider`
 - `src/degenebet/data/__init__.py` — public loading API
 - `tests/` mirrors `src/degenebet/` structure
+- `notebooks/` — marimo notebooks for analysis, visualization, and
+  interacting with the application (see Notebooks below)
 
 ## Conventions
 - Use polars for all tabular data; never pandas
@@ -42,6 +46,22 @@
 - Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`)
 - Use `importlib.metadata.version("degenebet")` for `__version__` — never
   hardcode it
+
+## Notebooks
+- `marimo` is the preferred notebook library and `altair` the preferred
+  visualization library for this project — reactive, plain-`.py` notebooks
+  (git-diffable, no JSON) with polars-native charting.
+- Not part of `just check` — notebooks are exploratory, not CI-gated
+  application code — but reuse production code (`degenebet.data`,
+  `degenebet.modeling.*`) rather than reimplementing logic.
+- Notebooks read from the local cache only (`DataAccess`, `nflverse_cache`,
+  etc.) — never call `nflreadpy`/SharpAPI live. Run `degenebet fetch ...` or
+  `degenebet sync` first to populate it. This matches how the application
+  itself reads data for real predictions.
+- `uv run marimo check notebooks/<name>.py` validates a notebook's
+  structure; `uv run marimo export html notebooks/<name>.py -o out.html`
+  actually executes it headlessly — the closest thing to a test for a
+  notebook, worth running before committing one.
 
 ## Testing Rules
 - Golden regression fixtures and `hypothesis` property tests are required for the modeling sub-project — see "Automation & Verification" below for what that means concretely
