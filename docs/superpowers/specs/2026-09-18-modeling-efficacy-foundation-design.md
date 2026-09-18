@@ -85,6 +85,17 @@ class Model(Protocol):
     def predict(self, data: pl.DataFrame) -> pl.DataFrame: ...
 ```
 
+`data`'s required columns are implementation-specific, not part of the
+protocol (`SpreadModel.predict` needs its own 6 feature columns; a future
+`Model` could need different ones) — the protocol only fixes the shape:
+`predict` returns `data` unchanged plus a `predicted_result` column, never
+dropping or requiring `result`. `result` matters anyway, though: when
+`iterate_folds` (below) calls `model.predict(split.test)`, `split.test`
+already carries `result` from `model_table`, and `predict` passes it
+through untouched — that's how `Efficacy` gets `predicted_result` sitting
+next to `result` in the same frame without either `Model` or `iterate_folds`
+having to know `Efficacy` exists.
+
 This is a deliberate simplification, not a placeholder: `TrainingResult`'s
 `residuals`/`weights`/`metadata` fields have no consumer in this spec's
 design (nothing in `iterate_folds` or `Efficacy` reads them), and inventing
