@@ -14,7 +14,7 @@ def _():
 
     from degenebet.data.access import DataAccess, NflverseSource, SharpApiSource
     from degenebet.data.gameweek import Gameweek
-    from degenebet.modeling.features import build_model_table, compute_rolling_features
+    from degenebet.modeling.features import compute_rolling_features
 
     return (
         DataAccess,
@@ -22,7 +22,6 @@ def _():
         NflverseSource,
         SharpApiSource,
         alt,
-        build_model_table,
         compute_rolling_features,
         date,
         mo,
@@ -57,20 +56,18 @@ def _():
 
 @app.cell
 def _(DataAccess, Gameweek, NflverseSource, SEASONS, SharpApiSource, date):
-    _access = DataAccess(NflverseSource(), SharpApiSource())
-    _start_week = Gameweek(min(SEASONS), 1)
-    _end_week = Gameweek(max(SEASONS), 22)  # NFL seasons run through the Super Bowl
+    access = DataAccess(NflverseSource(), SharpApiSource())
+    start_week = Gameweek(min(SEASONS), 1)
+    end_week = Gameweek(max(SEASONS), 22)  # NFL seasons run through the Super Bowl
+    as_of_date = date.today()
 
     # get_team_data: one row per (game_id, team) -- schedule/spread context
     # from that team's own perspective, plus the raw team_stats row
     # left-joined in. This is the shape compute_rolling_features expects.
-    team_data = _access.get_team_data(_start_week, _end_week, as_of_date=date.today())
-
-    # get_game_data: one row per game -- the shape build_model_table expects.
-    schedules = _access.get_game_data(_start_week, _end_week, as_of_date=date.today())
+    team_data = access.get_team_data(start_week, end_week, as_of_date=as_of_date)
 
     team_data.head()
-    return schedules, team_data
+    return access, as_of_date, end_week, start_week, team_data
 
 
 @app.cell
@@ -89,8 +86,17 @@ def _(compute_rolling_features, team_data):
 
 
 @app.cell
-def _(build_model_table, rolling, schedules):
-    model_table = build_model_table(schedules, rolling)
+def _(access, as_of_date, end_week, rolling, start_week):
+    # get_game_data's team_data param widens rolling's payload columns onto
+    # the game row, home_/away_ prefixed -- the same join DataAccess uses
+    # internally for get_team_data, applied here to a game-indexed table.
+    # It's a left join (a game where one team lacks enough rolling history
+    # gets null feature columns, not a dropped row) -- left as-is here since
+    # this cell is exploratory, not fitting a model; SpreadModel itself
+    # raises a clear error if asked to fit/predict on nulls.
+    model_table = access.get_game_data(
+        start_week, end_week, as_of_date=as_of_date, team_data=rolling
+    )
     model_table.head()
     return (model_table,)
 
@@ -193,7 +199,7 @@ def _(alt, mo, pl, rolling, team_dropdown):
     _chart = (
         alt.Chart(_team_rolling)
         .transform_fold(
-            ["rolling_offense_epa_per_play", "rolling_defense_epa_allowed_per_play"],
+            ["offense_epa", "defense_epa_allowed"],
             as_=["metric", "value"],
         )
         .mark_line(point=True)

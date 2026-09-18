@@ -30,6 +30,27 @@ class RegressorProtocol(Protocol):
     def predict(self, X: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
 
 
+def _raise_if_null_features(model_table: pl.DataFrame) -> None:
+    """DataAccess's team_data widening always left-joins (see access.py's
+    _widen_with_team_data), so a game where one team lacks enough rolling
+    history comes through with null feature columns rather than being
+    dropped -- by design, so the drop decision is the caller's explicit
+    choice (e.g. model_table.drop_nulls(subset=[...])), not something
+    silently baked into a shared widening/join step. Raising here (rather
+    than letting sklearn's generic "Input X contains NaN" surface, or
+    fitting/predicting on NaN silently) makes that unmade choice loud and
+    specific instead of a confusing downstream failure."""
+    null_counts = model_table.select(_FEATURE_COLUMNS).null_count()
+    null_columns = [c for c in _FEATURE_COLUMNS if null_counts[c][0] > 0]
+    if null_columns:
+        raise ValueError(
+            f"model_table has null values in feature columns {null_columns} -- "
+            "these rows can't be fit/predicted on. Filter them out explicitly "
+            "(e.g. model_table.drop_nulls(subset=[...])) before calling "
+            "SpreadModel.fit()/predict()."
+        )
+
+
 class SpreadModel:
     """Predicts `result` from 6 rolling team features via an injected
     regressor (LinearRegression by default), plus a cover probability
@@ -41,6 +62,7 @@ class SpreadModel:
 
     def fit(self, model_table: pl.DataFrame) -> None:
         """Fits the injected regressor on the 6 feature columns against `result`."""
+        _raise_if_null_features(model_table)
         features = model_table.select(_FEATURE_COLUMNS).to_numpy()
         target = model_table["result"].to_numpy()
         self.model.fit(features, target)
@@ -58,6 +80,7 @@ class SpreadModel:
 
     def predict(self, model_table: pl.DataFrame) -> pl.DataFrame:
         """Returns model_table with a new `predicted_result` column."""
+        _raise_if_null_features(model_table)
         features = model_table.select(_FEATURE_COLUMNS).to_numpy()
         predicted = self.model.predict(features)
         return model_table.with_columns(pl.Series("predicted_result", predicted))

@@ -91,6 +91,40 @@ _TEAM_DATA_CONTEXT_COLUMNS = frozenset(
 )
 
 
+def _widen_with_team_data(game_table: pl.DataFrame, team_data: pl.DataFrame) -> pl.DataFrame:
+    """Join `team_data` (keyed on game_id, team) onto `game_table` twice --
+    home perspective and away perspective -- prefixing every non-context
+    column home_/away_. Generic: works whether `team_data` is
+    get_team_data()'s own output or compute_rolling_features()'s.
+
+    Private: not part of DataAccess's public interface, but a plain module
+    function (not an instance method -- it doesn't touch self) so it's also
+    usable without a live DataAccess, e.g. for a frozen-fixture test that
+    doesn't go through the full historical/current stitching."""
+    payload_columns = [c for c in team_data.columns if c not in _TEAM_DATA_CONTEXT_COLUMNS]
+    home_payload = team_data.select(
+        "game_id",
+        "team",
+        *[pl.col(c).alias(f"home_{c}") for c in payload_columns],
+    )
+    away_payload = team_data.select(
+        "game_id",
+        "team",
+        *[pl.col(c).alias(f"away_{c}") for c in payload_columns],
+    )
+    return game_table.join(
+        home_payload,
+        left_on=["game_id", "home_team"],
+        right_on=["game_id", "team"],
+        how="left",
+    ).join(
+        away_payload,
+        left_on=["game_id", "away_team"],
+        right_on=["game_id", "team"],
+        how="left",
+    )
+
+
 class HistoricalDataSource(Protocol):
     def fetch(self, start_week: Gameweek, end_week: Gameweek) -> pl.DataFrame: ...
 
@@ -326,36 +360,6 @@ class DataAccess:
         )
         return pl.concat([home_side, away_side], how="vertical")
 
-    def _widen_with_team_data(
-        self, game_table: pl.DataFrame, team_data: pl.DataFrame
-    ) -> pl.DataFrame:
-        """Join `team_data` (keyed on game_id, team) onto `game_table` twice
-        -- home perspective and away perspective -- prefixing every
-        non-context column home_/away_. Generic: works whether `team_data`
-        is get_team_data()'s own output or compute_rolling_features()'s."""
-        payload_columns = [c for c in team_data.columns if c not in _TEAM_DATA_CONTEXT_COLUMNS]
-        home_payload = team_data.select(
-            "game_id",
-            "team",
-            *[pl.col(c).alias(f"home_{c}") for c in payload_columns],
-        )
-        away_payload = team_data.select(
-            "game_id",
-            "team",
-            *[pl.col(c).alias(f"away_{c}") for c in payload_columns],
-        )
-        return game_table.join(
-            home_payload,
-            left_on=["game_id", "home_team"],
-            right_on=["game_id", "team"],
-            how="left",
-        ).join(
-            away_payload,
-            left_on=["game_id", "away_team"],
-            right_on=["game_id", "team"],
-            how="left",
-        )
-
     def get_game_data(
         self,
         start_week: Gameweek,
@@ -372,7 +376,7 @@ class DataAccess:
         game_table = self._get_stitched_schedule(start_week, end_week, as_of_date)
         if team_data is None or game_table.height == 0:
             return game_table
-        return self._widen_with_team_data(game_table, team_data)
+        return _widen_with_team_data(game_table, team_data)
 
     def get_team_data(
         self, start_week: Gameweek, end_week: Gameweek, as_of_date: date

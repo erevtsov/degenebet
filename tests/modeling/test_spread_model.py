@@ -154,3 +154,26 @@ def test_fit_raises_on_single_row_train_set() -> None:
 
     with pytest.warns(RuntimeWarning), pytest.raises(ValueError, match="degenerate residual_std"):
         model.fit(table)
+
+
+def test_fit_raises_on_null_feature_column() -> None:
+    model = SpreadModel()
+    table = _noiseless_table()
+    table = table.with_columns(
+        pl.Series("home_offense_epa", [None, *table["home_offense_epa"].to_list()[1:]])
+    )
+
+    with pytest.raises(ValueError, match="null values in feature columns.*home_offense_epa"):
+        model.fit(table)
+
+
+def test_predict_raises_on_null_feature_column() -> None:
+    model = SpreadModel()
+    table = _noiseless_table()
+    model.fit(table)
+    table = table.with_columns(
+        pl.Series("away_turnover_margin", [None, *table["away_turnover_margin"].to_list()[1:]])
+    )
+
+    with pytest.raises(ValueError, match="null values in feature columns.*away_turnover_margin"):
+        model.predict(table)
