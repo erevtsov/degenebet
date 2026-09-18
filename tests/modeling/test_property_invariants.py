@@ -9,12 +9,14 @@ re-testing the scipy/polars primitives they're built on.
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 import pytest
 from hypothesis import given, reject
 from hypothesis import strategies as st
 
 from degenebet.modeling.backtest import run_backtest
+from degenebet.modeling.efficacy import Efficacy
 from degenebet.modeling.spread_model import SpreadModel
 
 _FEATURE_COLUMNS = [
@@ -127,3 +129,30 @@ def test_backtest_pnl_reconciles_under_reaggregation(
     )
 
     assert weekly_sum == pytest.approx(full_result.units_won, abs=1e-9)
+
+
+_prediction_pair = st.tuples(_finite_float, _finite_float)
+
+
+@given(pairs=st.lists(_prediction_pair, min_size=2, max_size=20))
+def test_efficacy_directional_accuracy_and_r_squared_are_bounded(
+    pairs: list[tuple[float, float]],
+) -> None:
+    predicted = [p for p, _ in pairs]
+    actual = [a for _, a in pairs]
+    # A near-constant `actual` column makes r2_score's denominator (the sum
+    # of squared deviations from the mean) ~0, producing a huge or NaN R²
+    # from an essentially unrelated numerical fluke -- not what this
+    # property is about (boundedness under real variation), so discard
+    # those examples. A near-constant `predicted` column triggers scipy's
+    # ConstantInputWarning in pearsonr (undefined correlation) -- not a
+    # failure, but noise this property test doesn't need either.
+    if np.std(actual) < 1e-6 or np.std(predicted) < 1e-6:
+        reject()
+
+    predictions = pl.DataFrame({"predicted_result": predicted, "result": actual})
+
+    result = Efficacy().evaluate(predictions)
+
+    assert 0.0 <= result.metrics["directional_accuracy"] <= 1.0
+    assert result.metrics["r_squared"] <= 1.0 + 1e-9
