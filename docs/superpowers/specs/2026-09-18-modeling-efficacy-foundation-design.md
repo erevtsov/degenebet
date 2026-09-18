@@ -265,6 +265,15 @@ model_table = access.get_game_data(
 split_strategy = SingleSplit(train_seasons=[2022, 2023], test_seasons=[2024])
 efficacy = Efficacy()
 
+# Each candidate is a name -> zero-arg factory returning a fresh, unfitted
+# Model -- iterate_folds calls this once per fold (SingleSplit has one
+# fold; WalkForwardSplit, later, would have several), never reusing an
+# already-fitted instance across folds.
+candidates: dict[str, Callable[[], Model]] = {
+    "linear": lambda: SpreadModel(),
+    "ridge": lambda: SpreadModel(model=Ridge(alpha=1.0)),
+}
+
 for candidate_name, model_factory in candidates.items():
     folds = iterate_folds(model_table, split_strategy, model_factory)
     result = efficacy.evaluate_folds(folds)
